@@ -1,0 +1,34 @@
+[project]
+name = "enterprise-rag-api"
+version = "0.1.0"
+description = "Mini enterprise RAG: ingestion, hybrid search over pgvector, streaming cited answers."
+readme = "../README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "python-dotenv>=1.2.2",
+    "openai>=2.50.0",
+    "instructor>=1.15.4",
+    "psycopg[binary,pool]>=3.2.3",
+    "pgvector>=0.3.6",
+    "fastembed>=0.8.0",
+    "pymupdf>=1.25.1",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=0.25.0",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+addopts = "-q"
+asyncio_mode = "auto"
