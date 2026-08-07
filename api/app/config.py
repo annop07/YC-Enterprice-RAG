@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # --- Storage ---
     database_url: str = "postgresql://rag:rag@localhost:5433/rag"
 
+    # --- Sources ---
+    # Optional. Without it the GitHub API allows 60 requests an hour, which one
+    # medium repository exhausts; with it, 5000.
+    github_token: str = ""
+
     # --- Embeddings ---
     # Default is the fast English pair so `docker compose up` is quick. For a
     # Thai or mixed-language corpus switch to intfloat/multilingual-e5-large
@@ -50,6 +55,9 @@ class Settings(BaseSettings):
     fusion_keep: int = 20  # survivors of RRF that go to the re-ranker
     top_k: int = 5  # chunks that actually enter the prompt
     rrf_k: int = 60  # the constant in 1 / (k + rank)
+    # HNSW trades recall for speed through this knob, and its default (40) gives
+    # up more than a corpus this size can afford. Applied per connection.
+    hnsw_ef_search: int = 100
 
     @property
     def llm_configured(self) -> bool:

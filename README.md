@@ -8,11 +8,31 @@ sources are chunked and embedded into Postgres, retrieved by **hybrid search**
 (vector + full-text, fused and re-ranked), and answered by an LLM over SSE with
 clickable citations.
 
-**Status.** Chat UI, SSE contract and citation model — built and running.
-Infrastructure — Postgres 16 + pgvector, schema, indexes, FastAPI service — up.
-Ingestion and retrieval are next; until they land the UI is served by mock route
-handlers that speak the same contract, so the whole interaction is exercised end
-to end rather than mocked at the component level.
+**Status — end to end and measured.** Ask a question in the browser and it is
+embedded, searched across both legs, fused, re-ranked, answered by an LLM over
+the retrieved text, streamed back token by token, and stored with its citations.
+The mock route handlers are still there and still speak the same contract:
+comment out one environment variable and the UI runs with no backend at all.
+
+## Does the retrieval actually work?
+
+| Configuration | Recall@1 | Recall@3 | Recall@5 | MRR |
+| --- | --- | --- | --- | --- |
+| vector only | 0.67 | 0.87 | 0.90 | 0.757 |
+| keyword only | 0.67 | 0.87 | 0.87 | 0.756 |
+| hybrid (RRF) | 0.73 | 0.93 | **1.00** | 0.843 |
+| hybrid + rerank | **0.77** | 0.93 | 0.97 | **0.853** |
+
+30 questions over 88 chunks, of which 71 are distractors that answer none of
+them. Every number is reproducible: `uv run --directory api python -m app.eval`.
+Method, caveats and the questions nothing answers are in
+[`eval-results.md`](eval-results.md).
+
+**Fusion is where the gain is** — the two legs miss *different* questions, which
+is the whole premise of running both. Re-ranking moves the right passage to
+first place more often but drops one out of the top five; on a corpus this size
+that difference is one question, so the honest reading is that the direction is
+right and the magnitude is not yet measurable.
 
 ## What it demonstrates
 
@@ -29,6 +49,22 @@ to end rather than mocked at the component level.
 | Postgres schema — pgvector HNSW + `tsvector` GIN on the same row | [`api/app/schema.sql`](api/app/schema.sql) |
 | Typed settings, model/dim coupling made explicit | [`api/app/config.py`](api/app/config.py) |
 | Schema bootstrap + pooled async access | [`api/app/db.py`](api/app/db.py) |
+| Connector protocol — a new source is one class, not a new pipeline | [`api/app/ingest/connectors.py`](api/app/ingest/connectors.py) |
+| Structure-aware chunker with exact line ranges and real token counts | [`api/app/ingest/chunker.py`](api/app/ingest/chunker.py) |
+| Embedder that counts with the same tokenizer it embeds with | [`api/app/ingest/embedder.py`](api/app/ingest/embedder.py) |
+| Idempotent ingest — content hash, delete-and-insert in one transaction | [`api/app/ingest/pipeline.py`](api/app/ingest/pipeline.py) |
+| PDF extraction with page locators and a scanned-document warning | [`api/app/ingest/pdf.py`](api/app/ingest/pdf.py) |
+| GitHub via one recursive tree call, permalinks pinned to the commit | [`api/app/ingest/github.py`](api/app/ingest/github.py) |
+| Upload and repository ingest endpoints | [`api/app/main.py`](api/app/main.py), `POST /ingest/files` · `POST /ingest/github` |
+| Hybrid search — both legs and RRF fusion in one SQL statement | [`api/app/retrieval/search.py`](api/app/retrieval/search.py), `POST /search` |
+| Cross-encoder re-ranking, logits squashed to a relevance probability | [`api/app/retrieval/reranker.py`](api/app/retrieval/reranker.py) |
+| Integration tests against a real Postgres, on their own database | [`api/tests/test_search_integration.py`](api/tests/test_search_integration.py) |
+| Streaming chat over retrieval, with the SSE order the UI depends on | [`api/app/chat/service.py`](api/app/chat/service.py), `POST /chat` |
+| Query rewriting so follow-up questions retrieve anything at all | [`rewrite_question`](api/app/chat/service.py) |
+| Citation guard — invented citations removed and counted | [`api/app/chat/prompt.py`](api/app/chat/prompt.py) |
+| Chat history that survives a re-index of the documents it cites | [`api/app/chat/store.py`](api/app/chat/store.py), `GET /sessions` |
+| Evaluation harness — four configurations through one code path | [`api/app/eval/runner.py`](api/app/eval/runner.py), [`eval-results.md`](eval-results.md) |
+| Containerised stack and CI that runs the SQL tests against real Postgres | [`docker-compose.yml`](docker-compose.yml), [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 ## Quick start
 
@@ -41,17 +77,94 @@ npm install --prefix frontend && npm run dev --prefix frontend -- --port 3100
 Open <http://localhost:3100>. The demo corpus answers four topics (hybrid search,
 chunking, deployment, citations) and honestly refuses anything else.
 
-**With the API and database:**
+**The whole stack in containers:**
 
 ```bash
 cp .env.example api/.env   # then paste your key into OPENAI_API_KEY
+docker compose --profile full up -d
+uv run --directory api python -m app.ingest ../docs
+```
+
+Open <http://localhost:3100>.
+
+**Or run the app processes directly** and keep only the database in Docker —
+which is what the `full` profile exists to stay out of the way of:
+
+```bash
 docker compose up -d       # Postgres 16 + pgvector on host port 5433
-uv run --directory api uvicorn app.main:app --port 8100
+uv run --directory api uvicorn app.main:app --port 8100 --reload
+npm run dev --prefix frontend -- --port 3100
 ```
 
 `GET /health` reports the database, the pgvector version and the corpus counts.
-The schema is applied on startup — no migration step to remember. To send the UI
-at it, set one variable in `frontend/.env.local`:
+The schema is applied on startup — no migration step to remember.
+
+**Index some documents:**
+
+```bash
+uv run --directory api python -m app.ingest ../docs
+```
+
+```
+  + architecture.md    3 chunks
+  + ingestion.md       4 chunks
+  + streaming.md       3 chunks
+  + handbook.pdf       3 chunks
+4 documents (4 written, 0 unchanged) · 13 chunks · budget 400 tokens
+```
+
+Re-running is free — an unchanged file is skipped without re-embedding. Pass
+`--force` to re-embed anyway. `GET /documents` lists what is indexed.
+
+Uploads and repositories go through the API:
+
+```bash
+curl -X POST localhost:8100/ingest/files -F "files=@notes.md" -F "files=@handbook.pdf"
+curl -X POST localhost:8100/ingest/github \
+     -H 'Content-Type: application/json' \
+     -d '{"repo":"pgvector/pgvector","path_prefix":"docs"}'
+```
+
+Set `GITHUB_TOKEN` for private repositories, and for the rate limit: GitHub
+allows 60 requests an hour unauthenticated, which one medium repository spends.
+
+**Search it:**
+
+```bash
+curl -X POST localhost:8100/search \
+     -H 'Content-Type: application/json' \
+     -d '{"query":"how do I run the whole stack locally?","top_k":3}'
+```
+
+```
+[1] handbook.pdf p.2      vector #1  keyword #1   rerank 0.04
+[2] architecture.md L1-24 vector #2  keyword #4   rerank 0.001
+```
+
+`POST /search` returns exactly the payload the chat stream sends as its
+`sources` event, so retrieval can be inspected and measured without generating
+an answer over it.
+
+**Ask it:**
+
+```bash
+curl -N -X POST localhost:8100/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"message":"What chunk size does ingestion use, and why?"}'
+```
+
+```
+event: session   {"session_id":"s_…","title":"What chunk size does ingestion use…"}
+event: sources   {"sources":[…],"candidates_considered":17,"retrieval_ms":1007}
+event: token     {"text":"The ingestion pipeline uses "}
+…
+event: done      {"latency_ms":2543,"usage":{…},"dropped_citations":0,"model":"…"}
+```
+
+The turn is stored as it streams, so `GET /sessions` lists it and
+`GET /sessions/{id}` replays it with its citations intact.
+
+To send the UI at the API, set one variable in `frontend/.env.local`:
 
 ```bash
 NEXT_PUBLIC_API_BASE=http://localhost:8100
@@ -129,12 +242,73 @@ that *silently*. A 1000-token chunk would have half its text embedded and no
 error anywhere. 400 leaves room for the title and heading prefix that gets
 prepended to the embedding input.
 
-## What is not built yet
+## A third measurement, found by ingesting a real repository
 
-- Ingestion: Markdown / PDF / GitHub connectors, chunking, embedding
-- RRF fusion query, cross-encoder re-ranking, the grounding guard
-- `POST /chat` — the real SSE endpoint the mock currently stands in for
-- The evaluation harness behind the Recall@5 numbers quoted in the demo corpus
+The first GitHub ingest turned pgvector's README into **901 chunks**. A 14k-token
+document should produce about 40.
+
+fastembed configures its tokenizer for inference: truncation on, and **padding
+on**. Padding makes `encode_batch` pad every sequence to the longest one in the
+batch, so counting a document line by line returned the same number for a
+one-word line and a full paragraph — 165 tokens for all 1,362 lines, and zero
+blank lines in a file that has 461. Nothing raised. The chunker simply packed by
+a constant, and every `token_count` in the database was fiction.
+
+The counting tokenizer now has both padding and truncation switched off, which
+is what [`test_batch_counting_is_not_padded_to_the_longest_item`](api/tests/test_embedder.py)
+pins. The same README now yields 58 chunks against an ideal of 35.
+
+The lesson generalises: an inference-tuned tokenizer is not a measuring
+instrument, and every wrong answer it gives is plausible.
+
+## A fourth: the keyword leg was doing nothing
+
+`websearch_to_tsquery` and `plainto_tsquery` both **AND** their terms. So a
+question like "how do I run the whole stack locally?" only matches a chunk
+containing every one of those words — which no chunk does. Measured: **zero
+rows**. The keyword leg contributed nothing to any natural-language question
+while still appearing, correctly wired and fully tested, as half of a hybrid
+search.
+
+Switching to OR over the query's terms matched everything, and ranked it badly:
+`ts_rank_cd` has no inverse document frequency, so "the" and "do" score as
+loudly as "compose". The right chunk sat outside the top five. Dropping
+stopwords first put it at number one.
+
+Both halves of that were invisible from the code. They only showed up by
+running real questions against a real corpus and reading the ranks — which is
+why every source in the API response carries the rank it held in each leg.
+
+## A fifth: `now()` cannot order a conversation
+
+The transcript came back with the answer above the question. Both rows are
+written in one transaction and `created_at` defaults to `now()`, which in
+Postgres is **transaction** time — identical for both. The tiebreaker was the
+message id, which is random. A `seq` column fixed it, and
+[`test_a_transcript_comes_back_in_the_order_it_was_written`](api/tests/test_chat_store_integration.py)
+keeps it fixed.
+
+The same tests turned up a second one: a citation's foreign key to its chunk
+made a re-index landing mid-answer take the whole turn down. The link is now
+resolved through a subquery that yields NULL when the chunk is gone — it was
+only ever a convenience, since the stored source snapshot is what history
+renders from.
+
+## Known limits
+
+- **Thai reaches only one leg.** `to_tsvector('simple', …)` does not segment
+  Thai, so a Thai sentence becomes one unusable token and the keyword leg
+  contributes nothing. The vector leg carries those queries alone until a
+  segmenter is wired in.
+- **The evaluation set is small and self-authored.** 30 questions written by the
+  person who wrote the documents flatters retrieval; differences under ~0.05 are
+  noise at that size.
+- **Answer quality is not measured.** The harness scores retrieval. Whether the
+  model then answers correctly from what it was handed is a separate question.
+- **HNSW is built at bootstrap.** Fine for a corpus of this size; a bulk load of
+  millions of chunks wants the index created afterwards.
+- Thai word segmentation before `to_tsvector`; the `simple` configuration does
+  not segment Thai, so the keyword leg will be weak on Thai documents
 
 Until those land, every number the demo answers with comes from
 [`frontend/src/lib/mock-corpus.ts`](frontend/src/lib/mock-corpus.ts) and the header

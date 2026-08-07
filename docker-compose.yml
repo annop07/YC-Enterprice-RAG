@@ -17,5 +17,32 @@ services:
       timeout: 3s
       retries: 20
 
+  # The API and web app are opt-in: `docker compose up -d db` is enough while
+  # developing against a locally run uvicorn and `next dev`.
+  api:
+    profiles: ["full"]
+    build: ./api
+    env_file: ./api/.env
+    environment:
+      # Inside the network the database is on its own hostname and default port.
+      DATABASE_URL: postgresql://rag:rag@db:5432/rag
+    ports:
+      - "8100:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    profiles: ["full"]
+    build:
+      context: ./frontend
+      args:
+        # Baked in at build time — the browser, not the container, makes this call.
+        NEXT_PUBLIC_API_BASE: http://localhost:8100
+    ports:
+      - "3100:3000"
+    depends_on:
+      - api
+
 volumes:
   pgdata:

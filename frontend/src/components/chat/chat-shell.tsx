@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { IconMenu2, IconX } from "@tabler/icons-react";
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
@@ -17,30 +11,24 @@ import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useChat } from "@/hooks/use-chat";
-import { IS_DEMO, getCorpusStats } from "@/lib/api";
 import {
+  IS_DEMO,
   deleteSession,
-  deriveTitle,
+  getCorpusStats,
   getSession,
-  getSessionsServerSnapshot,
-  getSessionsSnapshot,
-  newSessionId,
-  subscribeSessions,
-  upsertSession,
-} from "@/lib/session-store";
+  getSessions,
+} from "@/lib/api";
+import { fromStored, newSessionId } from "@/lib/messages";
 import { cn } from "@/lib/utils";
-import type { CorpusStats, Source } from "@/lib/types";
+import type { CorpusStats, SessionSummary, Source } from "@/lib/types";
 
 export function ChatShell() {
-  const sessions = useSyncExternalStore(
-    subscribeSessions,
-    getSessionsSnapshot,
-    getSessionsServerSnapshot,
-  );
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
-  // Lazily generated once per mount. It never reaches the DOM as text — only
-  // as the "which row is highlighted" comparison, and the stored session list
-  // is empty during SSR — so a server/client mismatch has nothing to render.
+  // Generated on the client and sent with the first turn; the server keys the
+  // conversation by it. It never reaches the DOM as text — only as the "which
+  // row is highlighted" comparison, and the list is empty during SSR — so a
+  // server/client mismatch has nothing to render.
   const [sessionId, setSessionId] = useState(newSessionId);
 
   const { messages, status, send, stop, load } = useChat(sessionId);
@@ -49,9 +37,17 @@ export function ChatShell() {
   const [stats, setStats] = useState<CorpusStats | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Only a turn the user actually sent is worth persisting; without this,
-  // opening an old session would immediately rewrite it and reorder the list.
+  // Only a completed turn changes the session list; without this, opening an
+  // old session would refetch on every render.
   const dirty = useRef(false);
+
+  const refreshSessions = useCallback(() => {
+    getSessions()
+      .then(setSessions)
+      .catch(() => {
+        /* the sidebar just stays as it was */
+      });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,22 +58,19 @@ export function ChatShell() {
       .catch(() => {
         /* sidebar just omits the counts */
       });
+    refreshSessions();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshSessions]);
 
+  // The server writes the turn as part of the stream, so the list is only
+  // stale between the last token and this refresh.
   useEffect(() => {
     if (status !== "idle" || !dirty.current || messages.length === 0) return;
     dirty.current = false;
-    const firstUser = messages.find((m) => m.role === "user");
-    upsertSession({
-      id: sessionId,
-      title: deriveTitle(firstUser?.content ?? "New chat"),
-      updated_at: new Date().toISOString(),
-      messages,
-    });
-  }, [status, messages, sessionId]);
+    refreshSessions();
+  }, [status, messages, refreshSessions]);
 
   const submit = useCallback(() => {
     const text = draft.trim();
@@ -97,22 +90,27 @@ export function ChatShell() {
 
   const openSession = useCallback(
     (id: string) => {
-      const session = getSession(id);
-      if (!session) return;
-      setSessionId(id);
-      load(session.messages);
-      setOpenSource(null);
       setSidebarOpen(false);
+      getSession(id)
+        .then((session) => {
+          setSessionId(id);
+          load(session.messages.map(fromStored));
+          setOpenSource(null);
+        })
+        .catch(() => {
+          /* a session deleted in another tab — leave the current one alone */
+        });
     },
     [load],
   );
 
   const removeSession = useCallback(
     (id: string) => {
-      deleteSession(id);
+      setSessions((current) => current.filter((s) => s.id !== id));
+      void deleteSession(id).finally(refreshSessions);
       if (id === sessionId) startNew();
     },
-    [sessionId, startNew],
+    [sessionId, startNew, refreshSessions],
   );
 
   // --- stick-to-bottom ---------------------------------------------------

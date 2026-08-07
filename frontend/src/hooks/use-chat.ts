@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { streamChat } from "@/lib/api";
-import { emptyAssistantMessage, userMessage } from "@/lib/session-store";
+import { emptyAssistantMessage, userMessage } from "@/lib/messages";
 import type { ChatMessage } from "@/lib/types";
 
 /**

@@ -1,14 +1,36 @@
 """FastAPI application: corpus endpoints today, retrieval and chat next."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app import db
+from app.chat import store
+from app.chat.service import stream_chat
 from app.config import get_settings
-from app.schemas import CorpusStats, DocumentSummary, DocumentText, Health
+from app.ingest.github import GitHubConnector, GitHubError
+from app.ingest.pipeline import IngestReport, ingest
+from app.ingest.uploads import document_from_upload
+from app.retrieval.search import hybrid_search
+from app.schemas import (
+    ChatRequest,
+    CorpusStats,
+    DocumentSummary,
+    DocumentText,
+    GitHubIngestRequest,
+    Health,
+    IngestDocumentResult,
+    IngestResponse,
+    SearchRequest,
+    SessionDetail,
+    SessionSummary,
+    SourcesEvent,
+    StoredMessage,
+)
 
 
 @asynccontextmanager
@@ -101,6 +123,126 @@ async def documents() -> list[DocumentSummary]:
         )
         for r in rows
     ]
+
+
+def _response(report: IngestReport) -> IngestResponse:
+    return IngestResponse(
+        documents=report.documents,
+        written=report.written,
+        unchanged=report.unchanged,
+        chunks=report.chunks,
+        chunk_budget=report.chunk_budget,
+        results=[
+            IngestDocumentResult(path=r.path, status=r.status, chunks=r.chunks)
+            for r in report.results
+        ],
+    )
+
+
+@app.post("/ingest/files", response_model=IngestResponse)
+async def ingest_files(files: list[UploadFile], force: bool = False) -> IngestResponse:
+    """Index uploaded Markdown and PDF files."""
+    docs = []
+    for upload in files:
+        data = await upload.read()
+        try:
+            # PDF text extraction is CPU work; keep it off the event loop.
+            docs.append(
+                await asyncio.to_thread(
+                    document_from_upload, upload.filename or "upload", data
+                )
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=415, detail=str(e)) from e
+
+    return _response(await ingest(docs, force=force))
+
+
+@app.post("/ingest/github", response_model=IngestResponse)
+async def ingest_github(request: GitHubIngestRequest) -> IngestResponse:
+    """Index the Markdown in a GitHub repository at one commit."""
+    connector = GitHubConnector(
+        request.repo,
+        ref=request.ref,
+        path_prefix=request.path_prefix,
+        token=get_settings().github_token or None,
+    )
+    try:
+        # httpx here is synchronous, and a repo is many round trips.
+        docs = await asyncio.to_thread(lambda: list(connector.load()))
+    except GitHubError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    return _response(await ingest(docs, force=request.force))
+
+
+@app.post("/search", response_model=SourcesEvent)
+async def search(request: SearchRequest) -> SourcesEvent:
+    """Hybrid retrieval on its own.
+
+    Returns exactly the payload the chat stream sends as its `sources` event,
+    so the retrieval layer can be inspected and evaluated without generating
+    an answer over it.
+    """
+    result = await hybrid_search(request.query, top_k=request.top_k)
+    return SourcesEvent(
+        sources=result.sources,
+        candidates_considered=result.candidates_considered,
+        retrieval_ms=result.retrieval_ms,
+    )
+
+
+@app.post("/chat")
+async def chat(request: ChatRequest) -> StreamingResponse:
+    """Answer a question over the corpus, streamed as SSE.
+
+    Events arrive as session → sources → token* → done, and the order is the
+    point: sources are flushed before the first token so the citation cards are
+    readable while the answer is still being written.
+    """
+    session_id = request.session_id or store.new_id("s")
+    return StreamingResponse(
+        stream_chat(
+            question=request.message, session_id=session_id, top_k=request.top_k
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            # Without this nginx buffers the whole body and the answer arrives
+            # in one lump. The stream still works, it just stops looking like one.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/sessions", response_model=list[SessionSummary])
+async def sessions() -> list[SessionSummary]:
+    return [
+        SessionSummary(id=i, title=t, updated_at=u) for i, t, u in await store.list_sessions()
+    ]
+
+
+@app.get("/sessions/{session_id}", response_model=SessionDetail)
+async def session_detail(session_id: str) -> SessionDetail:
+    row = await db.fetch_one(
+        "SELECT id, title, updated_at FROM chat_session WHERE id = %s", (session_id,)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+
+    return SessionDetail(
+        id=row[0],
+        title=row[1],
+        updated_at=row[2].isoformat(),
+        messages=[StoredMessage(**m) for m in await store.session_messages(session_id)],
+    )
+
+
+@app.delete("/sessions/{session_id}", status_code=204)
+async def remove_session(session_id: str) -> None:
+    if not await store.delete_session(session_id):
+        raise HTTPException(status_code=404, detail="not found")
 
 
 @app.get("/documents/{document_id}", response_model=DocumentText)

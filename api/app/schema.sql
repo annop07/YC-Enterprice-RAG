@@ -81,11 +81,19 @@ CREATE TABLE IF NOT EXISTS chat_message (
     content    TEXT NOT NULL,
     -- latency, usage, model, dropped_citations — whatever the `done` event sent.
     meta       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Insertion order. `created_at` cannot order a conversation: the question
+    -- and its answer are written in one transaction, and now() is transaction
+    -- time, so both rows carry the same timestamp and the transcript comes back
+    -- with the answer above the question.
+    seq        BIGSERIAL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- For databases created before `seq` existed.
+ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS seq BIGSERIAL;
+
 CREATE INDEX IF NOT EXISTS chat_message_session_idx
-    ON chat_message (session_id, created_at);
+    ON chat_message (session_id, seq);
 
 CREATE TABLE IF NOT EXISTS message_citation (
     message_id TEXT NOT NULL REFERENCES chat_message(id) ON DELETE CASCADE,

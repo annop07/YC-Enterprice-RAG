@@ -3,8 +3,8 @@
 import { IconMessagePlus, IconTrash } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { StoredSession } from "@/lib/session-store";
-import type { CorpusStats } from "@/lib/types";
+
+import type { CorpusStats, SessionSummary } from "@/lib/types";
 
 export function SessionSidebar({
   sessions,
@@ -14,7 +14,7 @@ export function SessionSidebar({
   onNew,
   onDelete,
 }: {
-  sessions: StoredSession[];
+  sessions: SessionSummary[];
   activeId: string;
   stats: CorpusStats | null;
   onSelect: (id: string) => void;

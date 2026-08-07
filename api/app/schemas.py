@@ -82,6 +82,36 @@ class ChatRequest(BaseModel):
     top_k: int | None = None
 
 
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int | None = Field(default=None, ge=1, le=50)
+
+
+class GitHubIngestRequest(BaseModel):
+    #: "owner/name"
+    repo: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
+    #: Branch, tag or SHA. Defaults to the repository's default branch.
+    ref: str | None = None
+    #: Restrict to a subtree, e.g. "docs".
+    path_prefix: str = ""
+    force: bool = False
+
+
+class IngestDocumentResult(BaseModel):
+    path: str
+    status: str
+    chunks: int
+
+
+class IngestResponse(BaseModel):
+    documents: int
+    written: int
+    unchanged: int
+    chunks: int
+    chunk_budget: int
+    results: list[IngestDocumentResult]
+
+
 class DocumentSummary(BaseModel):
     id: str
     title: str
@@ -96,6 +126,27 @@ class DocumentText(BaseModel):
     id: str
     path: str
     text: str
+
+
+class SessionSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+
+
+class StoredMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    sources: list[Source] = []
+    meta: dict | None = None
+
+
+class SessionDetail(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+    messages: list[StoredMessage]
 
 
 class CorpusStats(BaseModel):

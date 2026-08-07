@@ -128,6 +128,26 @@ export interface SessionSummary {
   updated_at: string;
 }
 
+/**
+ * A message as the server stored it. `meta` is deliberately loose: it is
+ * whatever the `done` event carried at the time, so an answer from an older
+ * model still renders with the model and cost it actually ran at.
+ */
+export interface StoredMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: Source[];
+  meta: Record<string, unknown> | null;
+}
+
+export interface SessionDetail {
+  id: string;
+  title: string;
+  updated_at: string;
+  messages: StoredMessage[];
+}
+
 // --- Corpus ---------------------------------------------------------------
 
 export interface DocumentSummary {

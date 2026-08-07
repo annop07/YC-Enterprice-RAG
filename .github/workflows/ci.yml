@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+
+    services:
+      # The integration tests run against a real Postgres on purpose — the SQL
+      # is the interesting part of retrieval, and a mock would test the mock.
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rag -d rag"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Cache embedding models
+        uses: actions/cache@v4
+        with:
+          # Without this every run re-downloads the ONNX models from the Hub.
+          path: ~/.cache/huggingface
+          key: fastembed-bge-small-ms-marco-l6
+
+      - run: uv sync --frozen
+        working-directory: api
+
+      - run: uv run pytest
+        working-directory: api
+        env:
+          DATABASE_URL: postgresql://rag:rag@localhost:5433/rag
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx eslint .
+      - run: npm run build

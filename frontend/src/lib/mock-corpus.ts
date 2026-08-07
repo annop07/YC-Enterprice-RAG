@@ -178,8 +178,10 @@ into the prompt.
 
 ## Measured
 
-On the 42-question evaluation set, Recall@5 is 0.62 for the vector leg alone,
-0.55 for keyword alone, 0.79 fused, and 0.88 fused then re-ranked.
+On a 30-question evaluation set over 88 chunks, Recall@5 is 0.90 for the vector
+leg alone, 0.87 for keyword alone, and 1.00 once fused. Re-ranking lifts
+Recall@1 from 0.73 to 0.77 and MRR from 0.843 to 0.853, at the cost of one
+question dropping out of the top five.
 `,
   },
   {
@@ -321,8 +323,10 @@ into the prompt.`,
     id: "c_eval",
     doc_id: "d_retrieval",
     heading_path: "Hybrid Search & Re-ranking > Measured",
-    snippet: `On the 42-question evaluation set, Recall@5 is 0.62 for the vector leg alone,
-0.55 for keyword alone, 0.79 fused, and 0.88 fused then re-ranked.`,
+    snippet: `On a 30-question evaluation set over 88 chunks, Recall@5 is 0.90 for the vector
+leg alone, 0.87 for keyword alone, and 1.00 once fused. Re-ranking lifts
+Recall@1 from 0.73 to 0.77 and MRR from 0.843 to 0.853, at the cost of one
+question dropping out of the top five.`,
   },
   {
     id: "c_chunking",
@@ -443,7 +447,7 @@ The two rankings are merged with Reciprocal Rank Fusion, \`1 / (60 + rank)\` sum
 
 Each leg returns 50 candidates, fusion keeps 20, and a cross-encoder scores those 20 against the question directly before the top 5 enter the prompt [3].
 
-On the 42-question evaluation set that ordering is worth a lot: Recall@5 is 0.62 vector-only and 0.55 keyword-only, 0.79 once fused, and 0.88 after re-ranking [4].`,
+Measured over 30 questions and 88 chunks, fusion is where the gain is: Recall@5 goes from 0.90 vector-only and 0.87 keyword-only to **1.00** once fused. Re-ranking then trades a little recall for precision — Recall@1 0.73 → 0.77, MRR 0.843 → 0.853, with one question falling out of the top five [4].`,
     cites: [
       { chunk_id: "c_hybrid_legs", vector_rank: 1, keyword_rank: 2, rrf_score: 0.0325, rerank_score: 0.94 },
       { chunk_id: "c_fusion", vector_rank: 3, keyword_rank: 1, rrf_score: 0.0323, rerank_score: 0.91 },

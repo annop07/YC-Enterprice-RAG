@@ -30,6 +30,18 @@ async def bootstrap() -> None:
         await conn.commit()
 
 
+async def _configure(conn: psycopg.AsyncConnection) -> None:
+    await register_vector_async(conn)
+    # Session-level, so it is set once per pooled connection rather than on
+    # every query. Interpolated because Postgres does not take parameters in
+    # SET; the value is an int from settings, not user input.
+    await conn.execute(f"SET hnsw.ef_search = {int(get_settings().hnsw_ef_search)}")
+    # The pool requires the callback to hand the connection back outside a
+    # transaction. Without this commit every connection is discarded as
+    # "left in status INTRANS" and the pool never fills — it just times out.
+    await conn.commit()
+
+
 async def open_pool() -> AsyncConnectionPool:
     global _pool
     if _pool is None:
@@ -37,7 +49,7 @@ async def open_pool() -> AsyncConnectionPool:
             get_settings().database_url,
             min_size=1,
             max_size=8,
-            configure=register_vector_async,
+            configure=_configure,
             open=False,
         )
         await _pool.open(wait=True, timeout=15)

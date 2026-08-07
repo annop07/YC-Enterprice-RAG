@@ -1,0 +1,152 @@
+[
+  {
+    "question": "What chunk size and overlap does ingestion use?",
+    "path": "ingestion.md",
+    "contains": "400 tokens with 80 tokens of overlap"
+  },
+  {
+    "question": "Why not use larger chunks?",
+    "path": "ingestion.md",
+    "contains": "caps at 512 input tokens"
+  },
+  {
+    "question": "How are token counts measured when splitting a document?",
+    "path": "ingestion.md",
+    "contains": "the embedding model's own tokenizer"
+  },
+  {
+    "question": "What makes a citation clickable?",
+    "path": "ingestion.md",
+    "contains": "line boundaries"
+  },
+  {
+    "question": "Is the text that gets embedded the same as the text that gets shown?",
+    "path": "ingestion.md",
+    "contains": "prefixed with the document title and heading breadcrumb"
+  },
+  {
+    "question": "What happens if I ingest the same file twice?",
+    "path": "ingestion.md",
+    "contains": "Re-ingesting an unchanged"
+  },
+  {
+    "question": "Do e5 models need anything special?",
+    "path": "ingestion.md",
+    "contains": "the e5 family, get `query:` and `passage:`"
+  },
+  {
+    "question": "Which connectors can pull documents in?",
+    "path": "ingestion.md",
+    "contains": "connector is the only component that knows where text comes from"
+  },
+  {
+    "question": "What happens with a scanned PDF that has no text layer?",
+    "path": "ingestion.md",
+    "contains": "than forty characters is almost certainly a scan"
+  },
+  {
+    "question": "Why are GitHub links built from a commit rather than a branch?",
+    "path": "ingestion.md",
+    "contains": "permalinks from the commit SHA rather than the"
+  },
+  {
+    "question": "What do the two retrieval legs each find?",
+    "path": "retrieval.md",
+    "contains": "It finds paraphrases"
+  },
+  {
+    "question": "hnsw.ef_search",
+    "path": "retrieval.md",
+    "contains": "`hnsw.ef_search` is set to 100 per connection"
+  },
+  {
+    "question": "Why was the keyword query rewritten into an OR?",
+    "path": "retrieval.md",
+    "contains": "both AND their terms"
+  },
+  {
+    "question": "Why are stopwords removed before searching?",
+    "path": "retrieval.md",
+    "contains": "no inverse document frequency"
+  },
+  {
+    "question": "Why does RRF not need the two scores normalised?",
+    "path": "retrieval.md",
+    "contains": "RRF reads positions only"
+  },
+  {
+    "question": "How many candidates does each leg return?",
+    "path": "retrieval.md",
+    "contains": "Each leg returns 50 candidates and fusion keeps 20"
+  },
+  {
+    "question": "What does the cross-encoder do that the embeddings do not?",
+    "path": "retrieval.md",
+    "contains": "reads the question and the chunk\ntogether"
+  },
+  {
+    "question": "Does search work for Thai documents?",
+    "path": "retrieval.md",
+    "contains": "does not segment Thai"
+  },
+  {
+    "question": "In what order do the stream events arrive?",
+    "path": "streaming.md",
+    "contains": "event: session"
+  },
+  {
+    "question": "X-Accel-Buffering",
+    "path": "streaming.md",
+    "contains": "`X-Accel-Buffering: no`"
+  },
+  {
+    "question": "Why is EventSource not used on the client?",
+    "path": "streaming.md",
+    "contains": "GET-only and cannot carry a"
+  },
+  {
+    "question": "Which model streams fastest to a first visible token?",
+    "path": "streaming.md",
+    "contains": "qwen3-next-80b-a3b-instruct | 0.9s"
+  },
+  {
+    "question": "Why was qwen3.7-max rejected for the chat UI?",
+    "path": "streaming.md",
+    "contains": "is a reasoning model"
+  },
+  {
+    "question": "Why keep the vectors in Postgres instead of a dedicated store?",
+    "path": "architecture.md",
+    "contains": "keeping two systems in sync"
+  },
+  {
+    "question": "What is the trade-off of using pgvector?",
+    "path": "architecture.md",
+    "contains": "The cost is scale"
+  },
+  {
+    "question": "Why is the full-text column configured as simple?",
+    "path": "architecture.md",
+    "contains": "the English stemmer mangles everything"
+  },
+  {
+    "question": "What happens to old citations when a document is re-indexed?",
+    "path": "architecture.md",
+    "contains": "Citations are stored twice on purpose"
+  },
+  {
+    "question": "How do I get a working environment on my own machine?",
+    "path": "handbook.pdf",
+    "contains": "compose command must be enough"
+  },
+  {
+    "question": "When do new engineers get production access?",
+    "path": "handbook.pdf",
+    "contains": "on-call shadow rotation"
+  },
+  {
+    "question": "How does the support handover work?",
+    "path": "handbook.pdf",
+    "contains": "Handover happens at 10:00"
+  }
+]

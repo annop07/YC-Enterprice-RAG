@@ -3,6 +3,8 @@ import type {
   ChatEvent,
   CorpusStats,
   DocumentSummary,
+  SessionDetail,
+  SessionSummary,
   Source,
 } from "./types";
 
@@ -28,6 +30,27 @@ export async function getCorpusStats(): Promise<CorpusStats> {
 
 export async function getDocuments(): Promise<DocumentSummary[]> {
   return json(await fetch(`${API_BASE}/documents`, { cache: "no-store" }));
+}
+
+export async function getSessions(): Promise<SessionSummary[]> {
+  return json(await fetch(`${API_BASE}/sessions`, { cache: "no-store" }));
+}
+
+export async function getSession(id: string): Promise<SessionDetail> {
+  return json(
+    await fetch(`${API_BASE}/sessions/${encodeURIComponent(id)}`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`API ${res.status}`);
+  }
 }
 
 /** Full text of one document, for the source viewer. */
