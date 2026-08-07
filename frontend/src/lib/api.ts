@@ -3,6 +3,7 @@ import type {
   ChatEvent,
   CorpusStats,
   DocumentSummary,
+  IngestResponse,
   SessionDetail,
   SessionSummary,
   Source,
@@ -32,6 +33,28 @@ export async function getDocuments(): Promise<DocumentSummary[]> {
   return json(await fetch(`${API_BASE}/documents`, { cache: "no-store" }));
 }
 
+export async function ingestFiles(files: File[]): Promise<IngestResponse> {
+  const body = new FormData();
+  for (const file of files) body.append("files", file);
+  // No Content-Type header on purpose: the browser has to set the multipart
+  // boundary itself, and setting it by hand produces a body the server cannot parse.
+  return json(await fetch(`${API_BASE}/ingest/files`, { method: "POST", body }));
+}
+
+export async function ingestGitHub(request: {
+  repo: string;
+  path_prefix?: string;
+  ref?: string;
+}): Promise<IngestResponse> {
+  return json(
+    await fetch(`${API_BASE}/ingest/github`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    }),
+  );
+}
+
 export async function getSessions(): Promise<SessionSummary[]> {
   return json(await fetch(`${API_BASE}/sessions`, { cache: "no-store" }));
 }
@@ -51,6 +74,13 @@ export async function deleteSession(id: string): Promise<void> {
   if (!res.ok && res.status !== 404) {
     throw new Error(`API ${res.status}`);
   }
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) throw new Error(`API ${res.status}`);
 }
 
 /** Full text of one document, for the source viewer. */

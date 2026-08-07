@@ -17,7 +17,8 @@ FROM node:22-slim AS run
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/.next ./.next
-COPY --from=build /app/public ./public
+# No `public/` here — this app ships no static assets, and COPYing a directory
+# that does not exist fails the build rather than being skipped.
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 EXPOSE 3000

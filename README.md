@@ -56,6 +56,7 @@ right and the magnitude is not yet measurable.
 | PDF extraction with page locators and a scanned-document warning | [`api/app/ingest/pdf.py`](api/app/ingest/pdf.py) |
 | GitHub via one recursive tree call, permalinks pinned to the commit | [`api/app/ingest/github.py`](api/app/ingest/github.py) |
 | Upload and repository ingest endpoints | [`api/app/main.py`](api/app/main.py), `POST /ingest/files` · `POST /ingest/github` |
+| Corpus panel — drop a file in, point at a repo, see and remove what is indexed | [`frontend/src/components/corpus/corpus-panel.tsx`](frontend/src/components/corpus/corpus-panel.tsx) |
 | Hybrid search — both legs and RRF fusion in one SQL statement | [`api/app/retrieval/search.py`](api/app/retrieval/search.py), `POST /search` |
 | Cross-encoder re-ranking, logits squashed to a relevance probability | [`api/app/retrieval/reranker.py`](api/app/retrieval/reranker.py) |
 | Integration tests against a real Postgres, on their own database | [`api/tests/test_search_integration.py`](api/tests/test_search_integration.py) |
@@ -116,7 +117,13 @@ uv run --directory api python -m app.ingest ../docs
 Re-running is free — an unchanged file is skipped without re-embedding. Pass
 `--force` to re-embed anyway. `GET /documents` lists what is indexed.
 
-Uploads and repositories go through the API:
+Or from the browser: the corpus counts in the sidebar open a panel that takes
+dropped Markdown and PDFs, indexes a GitHub repository, and lists what is
+already in the index. Removing a document there leaves the answers that cited it
+intact — `message_citation` keeps a snapshot of the source, so old citations
+still render after the text behind them is gone.
+
+The same thing over HTTP:
 
 ```bash
 curl -X POST localhost:8100/ingest/files -F "files=@notes.md" -F "files=@handbook.pdf"

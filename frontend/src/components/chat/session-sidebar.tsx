@@ -1,6 +1,6 @@
 "use client";
 
-import { IconMessagePlus, IconTrash } from "@tabler/icons-react";
+import { IconChevronRight, IconMessagePlus, IconTrash } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +13,7 @@ export function SessionSidebar({
   onSelect,
   onNew,
   onDelete,
+  onOpenCorpus,
 }: {
   sessions: SessionSummary[];
   activeId: string;
@@ -20,6 +21,7 @@ export function SessionSidebar({
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onOpenCorpus: () => void;
 }) {
   return (
     <nav
@@ -75,7 +77,21 @@ export function SessionSidebar({
         )}
       </div>
 
-      <div className="border-sidebar-border border-t px-3 py-3">
+      {/* The corpus stats double as the way into managing it — what is indexed
+          and how to index more belong behind the same number. */}
+      <button
+        className="group border-sidebar-border border-t px-3 py-3 text-left transition-colors hover:bg-sidebar-accent focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2"
+        onClick={onOpenCorpus}
+        type="button"
+      >
+        <span className="mb-1.5 flex items-center gap-1 font-medium text-muted-foreground text-xs">
+          Corpus
+          <IconChevronRight
+            aria-hidden
+            className="transition-transform group-hover:translate-x-0.5"
+            size={12}
+          />
+        </span>
         {stats && (
           <dl className="space-y-1 text-muted-foreground text-xs">
             <div className="flex justify-between gap-2">
@@ -98,7 +114,7 @@ export function SessionSidebar({
             </div>
           </dl>
         )}
-      </div>
+      </button>
     </nav>
   );
 }

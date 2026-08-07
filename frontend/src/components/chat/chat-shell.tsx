@@ -8,6 +8,7 @@ import { MessageList } from "@/components/chat/message-list";
 import { SessionSidebar } from "@/components/chat/session-sidebar";
 import { SourcePanel } from "@/components/chat/source-panel";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
+import { CorpusPanel } from "@/components/corpus/corpus-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useChat } from "@/hooks/use-chat";
@@ -36,6 +37,7 @@ export function ChatShell() {
   const [openSource, setOpenSource] = useState<Source | null>(null);
   const [stats, setStats] = useState<CorpusStats | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [corpusOpen, setCorpusOpen] = useState(false);
 
   // Only a completed turn changes the session list; without this, opening an
   // old session would refetch on every render.
@@ -49,20 +51,18 @@ export function ChatShell() {
       });
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const refreshStats = useCallback(() => {
     getCorpusStats()
-      .then((s) => {
-        if (!cancelled) setStats(s);
-      })
+      .then(setStats)
       .catch(() => {
         /* sidebar just omits the counts */
       });
+  }, []);
+
+  useEffect(() => {
+    refreshStats();
     refreshSessions();
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshSessions]);
+  }, [refreshStats, refreshSessions]);
 
   // The server writes the turn as part of the stream, so the list is only
   // stale between the last token and this refresh.
@@ -136,6 +136,7 @@ export function ChatShell() {
           activeId={sessionId}
           onDelete={removeSession}
           onNew={startNew}
+          onOpenCorpus={() => setCorpusOpen(true)}
           onSelect={openSession}
           sessions={sessions}
           stats={stats}
@@ -148,6 +149,10 @@ export function ChatShell() {
             activeId={sessionId}
             onDelete={removeSession}
             onNew={startNew}
+            onOpenCorpus={() => {
+              setCorpusOpen(true);
+              setSidebarOpen(false);
+            }}
             onSelect={openSession}
             sessions={sessions}
             stats={stats}
@@ -227,6 +232,11 @@ export function ChatShell() {
       </div>
 
       <SourcePanel onClose={() => setOpenSource(null)} source={openSource} />
+      <CorpusPanel
+        onClose={() => setCorpusOpen(false)}
+        onIngested={refreshStats}
+        open={corpusOpen}
+      />
     </div>
   );
 }

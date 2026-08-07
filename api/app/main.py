@@ -245,6 +245,22 @@ async def remove_session(session_id: str) -> None:
         raise HTTPException(status_code=404, detail="not found")
 
 
+@app.delete("/documents/{document_id}", status_code=204)
+async def remove_document(document_id: str) -> None:
+    """Drop a document and its chunks.
+
+    Answers that cited it keep their citations: `message_citation` holds a
+    snapshot of the source, and its link to the chunk is nulled rather than
+    cascaded away.
+    """
+    async with db.pool().connection() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM document WHERE id = %s", (document_id,)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="not found")
+
+
 @app.get("/documents/{document_id}", response_model=DocumentText)
 async def document_text(document_id: str) -> DocumentText:
     row = await db.fetch_one(

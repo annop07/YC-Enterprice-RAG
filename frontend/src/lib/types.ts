@@ -160,6 +160,25 @@ export interface DocumentSummary {
   indexed_at: string;
 }
 
+// --- Ingestion ------------------------------------------------------------
+
+export interface IngestResult {
+  path: string;
+  /** "created" | "updated" | "unchanged" */
+  status: string;
+  chunks: number;
+}
+
+export interface IngestResponse {
+  documents: number;
+  written: number;
+  unchanged: number;
+  chunks: number;
+  /** Tokens per chunk the pipeline actually used, after clamping to the model */
+  chunk_budget: number;
+  results: IngestResult[];
+}
+
 export interface CorpusStats {
   documents: number;
   chunks: number;
