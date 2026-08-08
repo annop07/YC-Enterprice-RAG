@@ -314,9 +314,7 @@ renders from.
   model then answers correctly from what it was handed is a separate question.
 - **HNSW is built at bootstrap.** Fine for a corpus of this size; a bulk load of
   millions of chunks wants the index created afterwards.
-- Thai word segmentation before `to_tsvector`; the `simple` configuration does
-  not segment Thai, so the keyword leg will be weak on Thai documents
 
-Until those land, every number the demo answers with comes from
-[`frontend/src/lib/mock-corpus.ts`](frontend/src/lib/mock-corpus.ts) and the header
-says **demo corpus** on every screen.
+Leaving `NEXT_PUBLIC_API_BASE` unset is a separate mode, not a limitation: the UI
+falls back to [`frontend/src/lib/mock-corpus.ts`](frontend/src/lib/mock-corpus.ts),
+labels every screen **demo corpus**, and runs with no backend at all.
