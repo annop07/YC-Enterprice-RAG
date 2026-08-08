@@ -18,21 +18,28 @@ comment out one environment variable and the UI runs with no backend at all.
 
 | Configuration | Recall@1 | Recall@3 | Recall@5 | MRR |
 | --- | --- | --- | --- | --- |
-| vector only | 0.67 | 0.87 | 0.90 | 0.757 |
-| keyword only | 0.67 | 0.87 | 0.87 | 0.756 |
-| hybrid (RRF) | 0.73 | 0.93 | **1.00** | 0.843 |
-| hybrid + rerank | **0.77** | 0.93 | 0.97 | **0.853** |
+| vector only | 0.57 | 0.77 | 0.87 | 0.673 |
+| keyword only | 0.50 | 0.77 | 0.87 | 0.640 |
+| hybrid (RRF) | 0.73 | 0.90 | 0.90 | 0.806 |
+| hybrid + rerank | **0.80** | **0.97** | **0.97** | **0.878** |
 
-30 questions over 88 chunks, of which 71 are distractors that answer none of
-them. Every number is reproducible: `uv run --directory api python -m app.eval`.
-Method, caveats and the questions nothing answers are in
-[`eval-results.md`](eval-results.md).
+30 questions over 147 chunks, of which 125 are distractors that answer none of
+them. `uv run --directory api python -m app.eval` reproduces this, but only
+against the same corpus — the harness scores whatever is in the database, so the
+numbers move when the index does. [`eval-results.md`](eval-results.md) lists the
+exact documents, the earlier and smaller distractor set these numbers replace,
+and the questions nothing answers.
 
 **Fusion is where the gain is** — the two legs miss *different* questions, which
-is the whole premise of running both. Re-ranking moves the right passage to
-first place more often but drops one out of the top five; on a corpus this size
-that difference is one question, so the honest reading is that the direction is
-right and the magnitude is not yet measurable.
+is the whole premise of running both. Alone, neither leg gets past 0.87 at
+Recall@5 or 0.57 at Recall@1; fused those are 0.90 and 0.73, and re-ranking
+takes Recall@1 to 0.80. **The pipeline as a whole is what holds up:** against a
+distractor set two thirds larger than the one first measured, the single legs
+fell away — the keyword leg from 0.67 to 0.50 Recall@1 — while `hybrid + rerank`
+did not degrade at all. The figures are stable across re-indexing, which earlier
+ones were not. Individual cells are worth ±1 question at this sample size and
+should be read that way: an earlier corpus put fusion at a perfect 1.00 on
+Recall@5, and that did not survive a larger one.
 
 ## What it demonstrates
 
@@ -106,16 +113,25 @@ The schema is applied on startup — no migration step to remember.
 uv run --directory api python -m app.ingest ../docs
 ```
 
+A first run marks every document `+` for created. The same command with
+`--force` re-indexes a corpus that is already there, and prints `~` instead:
+
 ```
-  + architecture.md    3 chunks
-  + ingestion.md       4 chunks
-  + streaming.md       3 chunks
-  + handbook.pdf       3 chunks
-4 documents (4 written, 0 unchanged) · 13 chunks · budget 400 tokens
+  ~ architecture.md                                  3 chunks
+  ~ ingestion.md                                     5 chunks
+  ~ retrieval.md                                     6 chunks
+  ~ streaming.md                                     5 chunks
+  ~ handbook.pdf                                     3 chunks
+5 documents (5 written, 0 unchanged) · 22 chunks · budget 400 tokens
 ```
 
-Re-running is free — an unchanged file is skipped without re-embedding. Pass
-`--force` to re-embed anyway. `GET /documents` lists what is indexed.
+Re-running is free — an unchanged file is skipped without re-embedding. The
+check is a hash of the file's text alone, so it cannot see a change in the
+*extraction* code: improve how titles are parsed and a normal re-run reports
+`unchanged` and keeps the old title, which is embedded into every chunk of that
+document and not merely displayed. Pass `--force` after changing anything in the
+extraction path. `GET /documents` lists what is indexed, and
+[`docs/ingestion.md`](docs/ingestion.md) explains the trap.
 
 Or from the browser: the corpus counts in the sidebar open a panel that takes
 dropped Markdown and PDFs, indexes a GitHub repository, and lists what is
@@ -303,10 +319,16 @@ renders from.
 
 ## Known limits
 
-- **Thai reaches only one leg.** `to_tsvector('simple', …)` does not segment
-  Thai, so a Thai sentence becomes one unusable token and the keyword leg
-  contributes nothing. The vector leg carries those queries alone until a
-  segmenter is wired in.
+- **Thai reaches neither leg, for two separate reasons.** `to_tsvector('simple',
+  …)` does not segment Thai, so a Thai sentence becomes one unusable token and
+  the keyword leg contributes nothing. The vector leg is in worse shape, not
+  better: `BAAI/bge-small-en-v1.5` has no Thai in its vocabulary, so a run of
+  Thai encodes to a single `[UNK]` and unrelated Thai questions come back with
+  the same twenty chunks. Questions that mix Thai with Latin-script terms do
+  retrieve, and there the keyword leg is usually the stronger of the two,
+  because `simple` tokenizes those terms normally. Fixing this is a segmenter
+  for one leg and a multilingual embedding model plus a re-index for the other.
+  Measurements are in [`docs/retrieval.md`](docs/retrieval.md).
 - **The evaluation set is small and self-authored.** 30 questions written by the
   person who wrote the documents flatters retrieval; differences under ~0.05 are
   noise at that size.

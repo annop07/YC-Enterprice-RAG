@@ -35,9 +35,47 @@ chunk fell out of the top five entirely. With them removed it ranks first.
 Every term is quoted before it reaches `to_tsquery`, so punctuation in a query
 is data rather than operators.
 
-This is also the leg that Thai text does not reach yet. The `simple`
-configuration does not segment Thai, so a Thai sentence becomes one unusable
-token. The vector leg carries those queries alone until a segmenter is added.
+## What Thai does to each leg
+
+Thai defeats both legs, and it defeats them for two unrelated reasons that need
+two unrelated fixes.
+
+The keyword leg fails at the tokenizer, where the `simple` configuration
+does not segment Thai, so an unbroken run of Thai characters becomes one token
+covering the whole phrase. Postgres will match that token against a query token
+spelled exactly the same way and against nothing else — no prefix of it, no word
+inside it. Measured over six Thai questions, not one of the twenty chunks that
+came back had a keyword rank at all.
+
+The vector leg fails earlier and more completely. `BAAI/bge-small-en-v1.5` is an
+English model and there is no Thai in its WordPiece vocabulary, so each unbroken
+run of Thai encodes to a single `[UNK]`. Six Thai questions on six different
+subjects therefore produced the same embedding — pairwise cosine 1.0000 — and
+the leg returned the same twenty chunks for all of them. It is not ranking the
+corpus badly. It is not reading the question.
+
+Mixing Latin-script tokens into a Thai question changes the picture, and it is
+the keyword leg that recovers. `simple` tokenizes `pgvector` or `hnsw.ef_search`
+normally whatever surrounds them, while the vector leg still sees those tokens
+against a background of `[UNK]`. Across six such questions the keyword leg
+ranked the answering chunk above the vector leg four times and level with it
+twice:
+
+| question | vector rank | keyword rank |
+| --- | --- | --- |
+| `pgvector มีข้อเสียอะไรบ้าง` | 49 | 8 |
+| `search รองรับภาษาไทยไหม` | 40 | 10 |
+| `ทำไมต้องลบ stopwords ก่อนเรียก ts_rank_cd` | 9 | 1 |
+| `hnsw.ef_search ตั้งค่าไว้เท่าไร` | 6 | 3 |
+
+So the keyword leg is the one carrying mixed queries, which is the reverse of
+what a hybrid search is usually assumed to do with a non-English question.
+
+The two repairs are independent. The keyword leg needs a Thai segmenter feeding
+`to_tsvector`. The vector leg needs a multilingual embedding model —
+`api/app/config.py` points at `intfloat/multilingual-e5-large` — and swapping it
+re-embeds the corpus, so it is a re-index rather than a configuration change.
+Doing either one alone leaves the other leg exactly as blind as it is now.
 
 ## Fusion
 

@@ -29,23 +29,47 @@ from app.schemas import Locator, RetrievalTrace, Source
 #: appears in. It reads positions only, so cosine distance and ts_rank never
 #: have to be normalised onto a shared scale — which is exactly where a
 #: hand-weighted hybrid score usually goes wrong.
+#:
+#: Every ordering carries `(document_id, ordinal)` as a tiebreak, because none
+#: of the three scores is unique. `ts_rank_cd` is the worst offender — it has no
+#: IDF and quantises hard, so a real query here returns 28 chunks sharing 7
+#: distinct scores — and RRF ties whenever two chunks hold the same rank in
+#: opposite legs. Without a tiebreak the order of tied rows is whatever the heap
+#: yields, which a re-index reshuffles: the same corpus then measures
+#: differently, and "reproducible from a stated corpus" stops being true.
+#:
+#: The key is `(document_id, ordinal)`, NOT `chunk.id`. `chunk.id` is BIGSERIAL
+#: and a re-ingest deletes and re-inserts every row, so it is reassigned by
+#: insertion time — deterministic within one index generation and reshuffled by
+#: the next, which is precisely the bug. `document.id` is a hash of
+#: `source_type:source_id` and `ordinal` is the chunk's position in its
+#: document, so the pair survives a re-index and `UNIQUE (document_id, ordinal)`
+#: makes it a total order.
+#:
+#: The vector leg tiebreaks in the window rather than in its inner ORDER BY:
+#: adding sort keys there turns the HNSW `Index Scan ... Order By` into a
+#: `Seq Scan + Sort` (checked with EXPLAIN), which is the cost this module's
+#: subquery shape exists to avoid. The keyword leg has no such constraint — GIN
+#: cannot order by `ts_rank_cd` at all, so that sort is already happening and
+#: the extra keys are free; it tiebreaks in both places, which also pins which
+#: rows survive its LIMIT.
 HYBRID_SQL = """
 WITH vec AS (
-    SELECT id, ROW_NUMBER() OVER (ORDER BY distance) AS rank
+    SELECT id, ROW_NUMBER() OVER (ORDER BY distance, document_id, ordinal) AS rank
     FROM (
-        SELECT id, embedding <=> %(vector)s AS distance
+        SELECT id, document_id, ordinal, embedding <=> %(vector)s AS distance
         FROM chunk
-        ORDER BY 2
+        ORDER BY distance
         LIMIT %(vector_limit)s
     ) ranked
 ),
 kw AS (
-    SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank
+    SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC, document_id, ordinal) AS rank
     FROM (
-        SELECT c.id, ts_rank_cd(c.tsv, q) AS score
+        SELECT c.id, c.document_id, c.ordinal, ts_rank_cd(c.tsv, q) AS score
         FROM chunk c, to_tsquery('simple', %(keywords)s) AS q
         WHERE c.tsv @@ q
-        ORDER BY 2 DESC
+        ORDER BY score DESC, c.document_id, c.ordinal
         LIMIT %(keyword_limit)s
     ) ranked
 ),
@@ -66,7 +90,7 @@ SELECT
 FROM fused f
 JOIN chunk c ON c.id = f.chunk_id
 JOIN document d ON d.id = c.document_id
-ORDER BY f.rrf_score DESC
+ORDER BY f.rrf_score DESC, c.document_id, c.ordinal
 LIMIT %(keep)s
 """
 
@@ -279,6 +303,9 @@ async def hybrid_search(
         )
         for candidate, score in zip(candidates, scores):
             candidate.rerank_score = score
+        # `list.sort` is stable, so equal re-rank scores keep the fused order —
+        # which the SQL tiebreak now makes deterministic. That is the whole
+        # chain: without it this sort would quietly inherit the heap's order.
         candidates.sort(key=lambda c: c.rerank_score or 0.0, reverse=True)
 
     elapsed = int((time.perf_counter() - started) * 1000)

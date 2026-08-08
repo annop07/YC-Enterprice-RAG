@@ -50,15 +50,18 @@ class _Unit:
     heading_path: str | None
 
 
-def heading_paths(lines: Sequence[str]) -> list[str | None]:
-    """Breadcrumb for every line, e.g. "Ingestion Pipeline > Chunking".
+def in_fenced_code(lines: Sequence[str]) -> list[bool]:
+    """Whether each line sits inside a fenced code block, markers included.
 
-    A heading line gets the path *including itself*, so a chunk that starts at
-    "## Chunking" is labelled with that section rather than the one above it.
-    Fenced code is skipped — a shell comment starting with `#` is not a heading.
+    Both breadcrumbs and title extraction need this and must not disagree about
+    it, so the fence state machine lives here once rather than in each caller.
+
+    A block is closed only by its own marker, so ``` inside a ~~~ block is
+    content. An unterminated fence runs to the end of the document: that is
+    what CommonMark says, and guessing a close would make one stray ``` in a
+    README silently re-interpret everything below it as prose.
     """
-    stack: list[tuple[int, str]] = []
-    out: list[str | None] = []
+    flags: list[bool] = []
     fence: str | None = None
 
     for line in lines:
@@ -69,10 +72,25 @@ def heading_paths(lines: Sequence[str]) -> list[str | None]:
                 fence = marker
             elif fence == marker:
                 fence = None
-            out.append(" > ".join(t for _, t in stack) or None)
+            flags.append(True)  # the marker line is never itself a heading
             continue
+        flags.append(fence is not None)
 
-        if fence is None:
+    return flags
+
+
+def heading_paths(lines: Sequence[str]) -> list[str | None]:
+    """Breadcrumb for every line, e.g. "Ingestion Pipeline > Chunking".
+
+    A heading line gets the path *including itself*, so a chunk that starts at
+    "## Chunking" is labelled with that section rather than the one above it.
+    Fenced code is skipped — a shell comment starting with `#` is not a heading.
+    """
+    stack: list[tuple[int, str]] = []
+    out: list[str | None] = []
+
+    for line, fenced in zip(lines, in_fenced_code(lines)):
+        if not fenced:
             heading = ATX_HEADING.match(line)
             if heading:
                 level = len(heading.group(1))

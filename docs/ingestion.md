@@ -77,6 +77,25 @@ file is a no-op and costs no embedding calls. A changed file deletes all of its
 chunks and re-inserts them inside one transaction, so a partially re-indexed
 document is never visible to a search.
 
+That hash covers the extracted text and nothing else. A file whose bytes are
+identical but whose extracted *metadata* would now come out differently —
+because the extraction code changed rather than the file — hashes the same and
+is skipped with the status `unchanged`. That status is true of the bytes and
+misleading about the outcome: the stored title stays whatever the previous
+extractor produced. Improving title extraction and re-running an ordinary
+ingest therefore changes nothing.
+
+The consequence is not a stale label. The title is embedded rather than merely
+displayed — `build_embed_input` prefixes it onto the chunk before the vector is
+computed — so an out-of-date title sits inside the embeddings and skews what
+those chunks match, while the citation card that shows only the chunk content
+looks fine. Repairing the column by hand would fix what is displayed and leave
+the vectors wrong. Re-index with `force` after changing anything in the
+extraction path: `--force` on the CLI, `"force": true` on the ingest endpoints.
+It re-derives and re-embeds a document whose hash still matches, which makes it
+the only way to pick up an extractor change rather than merely a way to skip
+the cache.
+
 Changing the embedding model to one with a different width is a re-index, not a
 config edit: the vector column width is fixed when the table is created, and the
 embedder refuses to start if `EMBED_DIM` disagrees with what the model returns.

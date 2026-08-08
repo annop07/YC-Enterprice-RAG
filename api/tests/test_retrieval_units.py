@@ -4,7 +4,13 @@ from __future__ import annotations
 import math
 
 from app.retrieval.reranker import relevance_probability
-from app.retrieval.search import Candidate, anchored_url, keyword_tsquery, to_source
+from app.retrieval.search import (
+    HYBRID_SQL,
+    Candidate,
+    anchored_url,
+    keyword_tsquery,
+    to_source,
+)
 
 
 def make_candidate(**overrides) -> Candidate:
@@ -135,3 +141,30 @@ def test_pdf_sources_report_a_page_and_no_anchor():
     )
     assert source.locator.page == 2
     assert source.url is None
+
+
+def test_every_ordering_carries_the_reindex_stable_tiebreak():
+    """Cheap guard for the property `test_search_determinism.py` proves.
+
+    That module needs Postgres and is skipped without it, so this pins the
+    invariant in a test that always runs: none of the three scores is unique,
+    so each ORDER BY must name `(document_id, ordinal)` after it. `chunk.id`
+    would be wrong — it is BIGSERIAL and a re-ingest reassigns it.
+    """
+    clauses = []
+    for line in HYBRID_SQL.splitlines():
+        if "ORDER BY" not in line:
+            continue
+        clause = line.split("ORDER BY", 1)[1]
+        # Window clauses sit inside `OVER (...) AS rank`; keep only the keys.
+        clause = clause.split(")")[0] if ") AS rank" in line else clause
+        clauses.append(clause.strip().replace("c.", ""))
+
+    assert len(clauses) == 5, f"orderings changed shape: {clauses}"
+
+    # The vector leg's inner ORDER BY is deliberately bare: sort keys there turn
+    # the HNSW `Index Scan ... Order By` into a `Seq Scan + Sort`. It is ranked
+    # by the window above it, which does carry the tiebreak, so the leg is still
+    # deterministic over the rows it returns.
+    bare = [c for c in clauses if not c.endswith("document_id, ordinal")]
+    assert bare == ["distance"], f"ordering without a stable tiebreak: {bare}"

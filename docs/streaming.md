@@ -19,6 +19,44 @@ parsed by hand. The response carries `X-Accel-Buffering: no`; without it a proxy
 buffers the whole body and the answer lands in one lump. The stream still works,
 it just stops looking like one.
 
+## What `dropped_citations` counts
+
+The line under a finished answer reading **"0 citations dropped"** is the
+`dropped_citations` field of the `done` event. It is the number of citation
+markers the model made up and the guard removed.
+
+The prompt gives the model a numbered list of retrieved context blocks — five of
+them at the default `top_k`, numbered 1 to 5 — and asks it to mark every factual
+claim with the number of the block it came from. Nothing stops it citing a
+seventh block that was never supplied. `strip_unsupported_citations` in
+`api/app/chat/prompt.py` scans the finished answer for `[n]` markers and deletes
+each one whose number is not among the sources actually retrieved for that turn,
+counting as it goes. That is the whole condition: the marker is a bracketed
+integer, and that integer is not one of the blocks the model was shown. A marker
+pointing at a block that does exist is never removed, however badly the sentence
+attached to it misreads the source.
+
+The test is textual and knows nothing about context. A bracketed number the
+model is merely quoting — an example of a bad citation, a version, an array
+index — is stripped exactly like a fabricated one, and counted. Documents in
+this corpus avoid writing bracketed integers in prose for that reason: the
+prompt tells the model to prefer the documents' own wording, so anything written
+that way here comes back in an answer and is then deleted from it.
+
+Zero means the model invented no citation numbers. It does not mean every claim
+in the answer is supported. The system prompt says a claim with no number is
+treated as unsupported, but that is an instruction to the model rather than a
+check on its output — an answer carrying no citations at all reports zero
+dropped citations, because there was nothing bracketed to remove. Read the
+number as a fabrication count, not as a coverage score.
+
+A non-zero count means that many invented markers were stripped, and the answer
+kept in history is the stripped version, with the leftover space before any
+trailing punctuation tidied up. The tokens had already gone to the browser by
+the time the whole answer existed to be checked, so the live stream shows the
+bad marker and the stored answer does not. The count is the part that tells you
+it happened.
+
 ## Choosing a model to stream from
 
 Measured against the KKU IntelSphere proxy. The number that matters for a chat

@@ -7,11 +7,16 @@ a second pipeline.
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
+import html
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Literal, Protocol
+
+from app.ingest.chunker import in_fenced_code
 
 SourceType = Literal["markdown", "pdf", "github"]
 
@@ -19,7 +24,18 @@ MARKDOWN_SUFFIXES = {".md", ".mdx", ".markdown"}
 #: Vendored trees are full of Markdown that is not this corpus. Without this,
 #: pointing the connector at a project root indexes every dependency's README.
 SKIP_DIRS = {"node_modules", "__pycache__", "dist", "build", "target", "site-packages"}
-_H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_MD_H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+#: Profile and project READMEs routinely open with `<h1 align="center">`, which
+#: no Markdown heading regex will ever see. Attributes may be quoted, unquoted
+#: or absent, and both the tag and its contents may wrap across lines — `[^>]*`
+#: and DOTALL cover that without pulling in an HTML parser.
+_HTML_H1 = re.compile(r"<h1\b[^>]*>(.*?)</h1\s*>", re.IGNORECASE | re.DOTALL)
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+#: Tags that stand for a break between words. Everything else is inline markup
+#: whose removal must *not* insert one, or `<strong>Hi</strong>, there` would
+#: come out as "Hi , there".
+_BREAK_TAG = re.compile(r"<\s*/?\s*(?:br|p|div|hr|li|tr|td|th)\b[^>]*>", re.IGNORECASE)
+_ANY_TAG = re.compile(r"<[^>]*>")
 
 
 @dataclass(frozen=True)
@@ -59,11 +75,68 @@ class Connector(Protocol):
     def load(self) -> Iterator[RawDocument]: ...
 
 
+def _strip_inline_html(fragment: str) -> str:
+    """Plain text out of an HTML heading's contents.
+
+    Badges, logo images and linked names are markup around the title, not the
+    title, so every tag comes out and what is left is collapsed to one line.
+    """
+    fragment = _COMMENT.sub("", fragment)
+    fragment = _BREAK_TAG.sub(" ", fragment)
+    fragment = _ANY_TAG.sub("", fragment)
+    # Last, so that an escaped `&lt;b&gt;` survives as literal text instead of
+    # being unescaped into a tag and then stripped.
+    fragment = html.unescape(fragment)
+    return " ".join(fragment.split())
+
+
+def _is_titleish(text: str) -> bool:
+    """Whether a stripped heading says anything a citation card could show.
+
+    A badge-only header strips to nothing and a rule-like one to `---`; both
+    are worse than the filename. Letters, digits and emoji all count, so
+    non-ASCII titles are never rejected.
+    """
+    return any(unicodedata.category(ch)[0] not in "PZC" for ch in text)
+
+
 def title_from_markdown(text: str, fallback: str) -> str:
-    """First H1 if the document has one, otherwise a readable filename."""
-    match = _H1.search(text)
-    if match:
-        return match.group(1).strip()
+    """First usable heading — Markdown `#` or HTML `<h1>` — else the filename.
+
+    Whichever kind comes first in the document wins: a README that opens with
+    a centered `<h1>` and only later has `## Install`-style Markdown means the
+    centered one as its title, and the reverse holds just as much. Headings
+    that strip to nothing usable are skipped rather than returned empty.
+
+    Fenced code is not a heading source: a `# ` in an opening ```bash usage
+    block is a shell comment, and an `<h1>` there is markup being demonstrated.
+    An HTML heading is judged by the line its opening tag is on.
+    """
+    lines = text.split("\n")
+    fenced = in_fenced_code(lines)
+    line_starts: list[int] = []
+    offset = 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1  # the newline `split` consumed
+
+    def is_prose(start: int) -> bool:
+        return not fenced[bisect.bisect_right(line_starts, start) - 1]
+
+    candidates = [
+        (m.start(), m.group(1).strip())
+        for m in _MD_H1.finditer(text)
+        if is_prose(m.start())
+    ]
+    candidates += [
+        (m.start(), _strip_inline_html(m.group(1)))
+        for m in _HTML_H1.finditer(text)
+        if is_prose(m.start())
+    ]
+
+    for _, title in sorted(candidates, key=lambda c: c[0]):
+        if _is_titleish(title):
+            return title
     return fallback.replace("-", " ").replace("_", " ").strip() or fallback
 
 
