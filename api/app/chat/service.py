@@ -20,6 +20,41 @@ from app.schemas import Source
 
 log = logging.getLogger(__name__)
 
+#: One line for the sources card, which has no room for the full explanation.
+UNREADABLE_QUERY_NOTICE = (
+    "โมเดล embedding อ่านคำถามนี้ไม่ออก จึงค้นแบบ semantic ไม่ได้ "
+    "(the embedding model cannot read this question)"
+)
+
+
+def unreadable_query_message(embed_model: str, rerank_model: str) -> str:
+    """The answer sent when retrieval could not read the question.
+
+    It has to say *the model cannot read this*, not *no documents found*. The
+    two look identical from the outside and have opposite fixes: one sends the
+    user off to check whether the corpus is empty, when the corpus is fine and
+    the model is simply the wrong one for this language. So the cause is named,
+    the models are named, and both real ways out are given.
+    """
+    return (
+        f"ผมยังตอบคำถามนี้ไม่ได้ครับ — ไม่ใช่เพราะไม่มีเอกสารในระบบ "
+        f"แต่เพราะโมเดล embedding ที่ใช้อยู่ (`{embed_model}`) "
+        f"อ่านคำถามนี้ไม่ออก\n\n"
+        f"โมเดลนี้มีคำศัพท์เฉพาะภาษาอังกฤษ ข้อความที่ไม่ใช่ภาษาอังกฤษจึงกลายเป็น "
+        f"token “ไม่รู้จัก” ทั้งหมด และคำถามทุกข้อในภาษานั้นจะได้เวกเตอร์ตัวเดียวกันเป๊ะ "
+        f"ระบบจึงปิดการค้นแบบ semantic ไว้ แทนที่จะหยิบเอกสารสุ่มมาตอบอย่างมั่นใจ\n\n"
+        f"ทางออก:\n"
+        f"- ถามเป็นภาษาอังกฤษ หรือใส่คำสำคัญภาษาอังกฤษลงไปในคำถามด้วย\n"
+        f"- หรือเปลี่ยน `EMBED_MODEL` เป็น `intfloat/multilingual-e5-large` "
+        f"(`EMBED_DIM=1024`) แล้ว re-index ใหม่ — และเปลี่ยน `RERANK_MODEL` จาก "
+        f"`{rerank_model}` เป็น `jinaai/jina-reranker-v2-base-multilingual` ด้วย "
+        f"เพราะตัว re-ranker ก็อ่านไม่ออกเหมือนกัน (ดู `.env.example`)\n\n"
+        f"_The embedding model in use is English-only and cannot read this "
+        f"question, so semantic search was disabled rather than allowed to "
+        f"return arbitrary documents. Ask in English, or switch to a "
+        f"multilingual embedding and re-ranking model and re-index._"
+    )
+
 
 def client() -> AsyncOpenAI:
     settings = get_settings()
@@ -62,6 +97,62 @@ async def rewrite_question(question: str, history: list[tuple[str, str]]) -> str
         return question
 
 
+async def _explain_instead_of_answering(
+    *,
+    settings,
+    session_id: str,
+    history: list[tuple[str, str]],
+    question: str,
+    search_query: str,
+    sources: list[Source],
+    result,
+    started: float,
+) -> AsyncIterator[str]:
+    """The unreadable-question turn: the same frames, with no model call.
+
+    Deliberately shaped like an ordinary turn — `token` frames, then `done`,
+    and the turn is persisted — so the client needs no special case to render
+    it and the session history does not develop holes where these turns were.
+    """
+    answer = unreadable_query_message(settings.embed_model, settings.rerank_model)
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    yield frame("token", {"text": answer})
+
+    message_id = await store.save_turn(
+        session_id=session_id,
+        title=store.derive_title(
+            next((c for r, c in history if r == "user"), question)
+        ),
+        question=question,
+        answer=answer,
+        sources=sources,
+        meta={
+            "model": settings.chat_model,
+            "usage": usage,
+            "dropped_citations": 0,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "retrieval_ms": result.retrieval_ms,
+            "candidates_considered": result.candidates_considered,
+            "rewritten_query": search_query if search_query != question else None,
+            # So a stored turn explains itself later, rather than reading as a
+            # turn where the model inexplicably refused.
+            "unreadable_query": True,
+        },
+    )
+
+    yield frame(
+        "done",
+        {
+            "message_id": message_id,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "usage": usage,
+            "dropped_citations": 0,
+            "model": settings.chat_model,
+        },
+    )
+
+
 async def stream_chat(
     *, question: str, session_id: str, top_k: int | None = None
 ) -> AsyncIterator[str]:
@@ -90,12 +181,32 @@ async def stream_chat(
                 "sources": [s.model_dump() for s in sources],
                 "candidates_considered": result.candidates_considered,
                 "retrieval_ms": result.retrieval_ms,
+                "notice": UNREADABLE_QUERY_NOTICE if result.unreadable_query else None,
             },
         )
 
         parts: list[str] = []
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         model_used = settings.chat_model
+
+        if result.unreadable_query:
+            # No call to the LLM at all. Whatever the keyword leg scraped
+            # together, retrieval could not read the question, so an answer
+            # generated over it would be a guess wearing citations — and the
+            # chat model reads Thai perfectly well, which makes that guess
+            # fluent and confident. Say what went wrong instead.
+            async for sse in _explain_instead_of_answering(
+                settings=settings,
+                session_id=session_id,
+                history=history,
+                question=question,
+                search_query=search_query,
+                sources=sources,
+                result=result,
+                started=started,
+            ):
+                yield sse
+            return
 
         stream = await client().chat.completions.create(
             model=settings.chat_model,

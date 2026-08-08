@@ -19,7 +19,12 @@ from typing import Iterator
 
 import httpx
 
-from app.ingest.connectors import MARKDOWN_SUFFIXES, RawDocument, title_from_markdown
+from app.ingest.connectors import (
+    MARKDOWN_SUFFIXES,
+    RawDocument,
+    is_vendored,
+    title_from_markdown,
+)
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +103,16 @@ class GitHubConnector:
                     continue
                 path = entry["path"]
                 if self.path_prefix and not path.startswith(f"{self.path_prefix}/"):
+                    continue
+                # Only the segments *below* the prefix are judged, mirroring
+                # `iter_files`, which never judges the segments of its own root:
+                # a prefix of ".github/workflows" was asked for deliberately and
+                # must not filter itself out.
+                below = path[len(self.path_prefix) + 1 :] if self.path_prefix else path
+                # Before the blob fetch, not after — a repository that committed
+                # its `.venv` costs one API call per vendored file otherwise, and
+                # unauthenticated requests run out after sixty.
+                if is_vendored(below.split("/")):
                     continue
                 if not any(path.lower().endswith(s) for s in self.suffixes):
                     continue

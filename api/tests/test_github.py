@@ -22,10 +22,30 @@ FILES = {
     "docs/img/logo.png": "not markdown",
     "src/main.py": "print()\n",
 }
-BLOB_SHA = {path: f"blob{i}" for i, path in enumerate(FILES)}
+#: A repository that committed its dependencies, which is the case the filter
+#: exists for. Only `docs/guide.md` belongs to the corpus.
+VENDORED = {
+    "docs/guide.md": "# Guide\n\nKept.\n",
+    ".venv/lib/site-packages/x/LICENSE.md": "# License\n\nVendored.\n",
+    "node_modules/y/README.md": "# Dep\n\nVendored.\n",
+    "build/generated/notes.md": "# Generated\n\nVendored.\n",
+    ".github/ISSUE_TEMPLATE/bug.md": "# Bug\n\nDot-directory.\n",
+}
 
 
-def build_client(*, truncated: bool = False, calls: list[str] | None = None):
+def blob_sha(path: str) -> str:
+    """A fake sha that says which file it came from, so calls can be asserted on."""
+    return "blob-" + path.replace("/", "-")
+
+
+def build_client(
+    *,
+    truncated: bool = False,
+    calls: list[str] | None = None,
+    files: dict[str, str] | None = None,
+):
+    files = FILES if files is None else files
+
     def handler(request: httpx.Request) -> httpx.Response:
         if calls is not None:
             calls.append(request.url.path)
@@ -42,19 +62,19 @@ def build_client(*, truncated: bool = False, calls: list[str] | None = None):
                 json={
                     "truncated": truncated,
                     "tree": [
-                        {"path": p, "type": "blob", "sha": BLOB_SHA[p]} for p in FILES
+                        {"path": p, "type": "blob", "sha": blob_sha(p)} for p in files
                     ]
                     + [{"path": "docs", "type": "tree", "sha": "treesha"}],
                 },
             )
         if path.startswith("/repos/acme/handbook/git/blobs/"):
             sha = path.rsplit("/", 1)[-1]
-            source = next(p for p, s in BLOB_SHA.items() if s == sha)
+            source = next(p for p in files if blob_sha(p) == sha)
             return httpx.Response(
                 200,
                 json={
                     "encoding": "base64",
-                    "content": base64.b64encode(FILES[source].encode()).decode(),
+                    "content": base64.b64encode(files[source].encode()).decode(),
                 },
             )
         return httpx.Response(404, json={"message": "Not Found"})
@@ -118,6 +138,50 @@ def test_a_rate_limited_response_says_what_to_do_about_it():
     )
     with pytest.raises(GitHubError, match="GITHUB_TOKEN"):
         list(connector.load())
+
+
+def test_vendored_and_dot_directories_do_not_enter_the_corpus():
+    """A repo that committed `.venv` or `node_modules` must not drag it in.
+
+    The connector walks the tree itself and so never reached `iter_files`,
+    which is where the skip list is applied for every local source.
+    """
+    docs = list(
+        GitHubConnector("acme/handbook", client=build_client(files=VENDORED)).load()
+    )
+    assert [d.path for d in docs] == ["docs/guide.md"]
+
+
+def test_a_skipped_path_costs_no_blob_call():
+    """Half the bug: filtering after the fetch still spends the rate limit.
+
+    Unauthenticated requests get sixty an hour, and one vendored tree is
+    thousands of files.
+    """
+    calls: list[str] = []
+    list(
+        GitHubConnector(
+            "acme/handbook", client=build_client(files=VENDORED, calls=calls)
+        ).load()
+    )
+    blob_calls = [c for c in calls if "/git/blobs/" in c]
+    assert blob_calls == [f"/repos/acme/handbook/git/blobs/{blob_sha('docs/guide.md')}"]
+
+
+def test_an_explicitly_requested_dot_subtree_is_not_filtered_out():
+    """Segments are judged below the prefix, as `iter_files` judges below its root.
+
+    Asking for `.github/ISSUE_TEMPLATE` and getting nothing back would be the
+    skip list overruling the caller.
+    """
+    docs = list(
+        GitHubConnector(
+            "acme/handbook",
+            path_prefix=".github/ISSUE_TEMPLATE",
+            client=build_client(files=VENDORED),
+        ).load()
+    )
+    assert [d.path for d in docs] == [".github/ISSUE_TEMPLATE/bug.md"]
 
 
 def test_a_malformed_repo_is_rejected_before_any_request():

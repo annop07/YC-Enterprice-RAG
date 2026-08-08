@@ -55,6 +55,11 @@ class SourcesEvent(BaseModel):
     sources: list[Source]
     candidates_considered: int
     retrieval_ms: int
+    #: Why this result set is the shape it is, when the shape needs explaining —
+    #: currently only "the embedding model could not read the question". Null on
+    #: a normal turn. A short result list is otherwise indistinguishable from a
+    #: thin corpus, and the two have completely different fixes.
+    notice: str | None = None
 
 
 class TokenEvent(BaseModel):

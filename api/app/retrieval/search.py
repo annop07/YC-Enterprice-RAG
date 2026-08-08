@@ -172,6 +172,11 @@ class SearchResult:
     sources: list[Source]
     candidates_considered: int
     retrieval_ms: int
+    #: The embedding model could not read the question (see `Embedder.reads`),
+    #: so the vector leg was disabled and nothing was re-ranked. Surfaced rather
+    #: than hidden: the caller has to be able to tell "we found nothing" apart
+    #: from "we could not look".
+    unreadable_query: bool = False
 
 
 def anchored_url(doc_url: str | None, line_start: int | None, line_end: int | None) -> str | None:
@@ -283,6 +288,20 @@ async def hybrid_search(
         return SearchResult([], 0, 0)
 
     embedder = get_embedder()
+
+    # Both models here are English-only by default, and both fail *silently* on
+    # text they cannot tokenise: the embedder maps every unreadable question to
+    # the same vector, and the cross-encoder then scores an arbitrary chunk at
+    # 0.99 — measured on this corpus, where two unrelated Thai questions return
+    # an identical top five headed by the same irrelevant chunk at 0.9905. A
+    # confident wrong answer is the worst failure mode this system has, so when
+    # the question is unreadable both blind stages are switched off and the
+    # keyword leg carries the query alone.
+    readable = embedder.reads(query)
+
+    # Embedded even when unreadable: the vector is still a bound parameter of
+    # the one shared query, and a second code path is exactly what the
+    # `fuse_candidates` docstring exists to prevent.
     vector = await asyncio.to_thread(embedder.embed_query, query)
 
     per_leg = settings.candidates_per_leg
@@ -291,12 +310,12 @@ async def hybrid_search(
         vector,
         per_leg,
         settings.fusion_keep,
-        vector_limit=0 if legs == "keyword" else per_leg,
+        vector_limit=0 if legs == "keyword" or not readable else per_leg,
         keyword_limit=0 if legs == "vector" else per_leg,
     )
     considered = len(candidates)
 
-    if candidates and rerank:
+    if candidates and rerank and readable:
         reranker = get_reranker()
         scores = await asyncio.to_thread(
             reranker.score, query, [c.content for c in candidates]
@@ -313,4 +332,5 @@ async def hybrid_search(
         sources=[to_source(c, i + 1) for i, c in enumerate(candidates[:top_k])],
         candidates_considered=considered,
         retrieval_ms=elapsed,
+        unreadable_query=not readable,
     )

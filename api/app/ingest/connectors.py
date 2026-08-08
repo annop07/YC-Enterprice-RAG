@@ -14,7 +14,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Literal, Protocol
+from typing import Iterable, Iterator, Literal, Protocol
 
 from app.ingest.chunker import in_fenced_code
 
@@ -140,6 +140,21 @@ def title_from_markdown(text: str, fallback: str) -> str:
     return fallback.replace("-", " ").replace("_", " ").strip() or fallback
 
 
+def is_vendored(parts: Iterable[str]) -> bool:
+    """Whether any segment marks a tree that is not part of the corpus.
+
+    Dot-directories (`.git`, `.venv`) and `SKIP_DIRS`. The rule lives here
+    rather than in each connector so that the local walks and the GitHub tree
+    walk cannot disagree about what counts as part of the corpus — and so that
+    the list of vendored names has exactly one definition.
+
+    Segments are judged *relative to the requested root*: a root that itself
+    sits under `build` or a dot-directory was named explicitly and is not
+    second-guessed.
+    """
+    return any(p.startswith(".") or p in SKIP_DIRS for p in parts)
+
+
 def iter_files(root: Path, suffixes: set[str]) -> tuple[list[Path], Path]:
     """Files of the given kinds under `root`, and the base their paths are relative to.
 
@@ -155,10 +170,7 @@ def iter_files(root: Path, suffixes: set[str]) -> tuple[list[Path], Path]:
     for path in sorted(root.rglob("*")):
         if path.suffix.lower() not in suffixes:
             continue
-        parts = path.relative_to(root).parts
-        if any(p.startswith(".") for p in parts):
-            continue  # .git, .venv, dot-directories generally
-        if any(p in SKIP_DIRS for p in parts):
+        if is_vendored(path.relative_to(root).parts):
             continue
         found.append(path)
     return found, root
