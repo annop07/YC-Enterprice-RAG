@@ -43,6 +43,21 @@ re-ranker `Xenova/ms-marco-MiniLM-L-6-v2`
 | hybrid (RRF) | 0.73 | 0.90 | 0.90 | 0.806 |
 | hybrid + rerank | **0.80** | **0.97** | **0.97** | **0.878** |
 
+Query readability: **10/10** classified correctly.
+
+Recall says nothing about whether the question was read in the first place. Every
+one of the 30 questions above is English, so the whole table can sit at 0.97
+while a question in another script returns the same arbitrary chunks for any
+input, at a re-rank score of 0.99 — which is what it did until the embedding
+model's vocabulary coverage was checked before the vector leg ran. The second
+number scores a ten-question set that pins that boundary from both sides: six
+questions retrieval must decline to read, and four it must not, the last of them
+English and unanswerable by this corpus so that *looked and found nothing* is
+never allowed to collapse into *could not look*. It is in
+[`api/app/eval/readability.json`](api/app/eval/readability.json), a misclassified
+question fails the run, and the same set runs in CI as a test because CI does not
+run this harness.
+
 22 of the 147 chunks are the project's own documentation and answer the
 questions; the other 125 are distractors, drawn from six repositories:
 `pgvector/pgvector`, `annop07/doctora-spring-boot`, `annop07/TacticalFitAI`,
@@ -131,9 +146,9 @@ to another document in the index.
   chosen to be adversarial. It is realistic, not controlled: five of the six
   repositories are unrelated to this project and one is pgvector's own
   documentation, which is far harder than the rest.
-- The header the harness prints reports **11 documents** for this corpus, not 15.
-  It counts distinct paths, and five of the indexed GitHub documents are each
-  called `README.md`. The scoring is unaffected — it runs against the database —
-  but the printed document count is a floor, not the true figure.
 - Everything here measures *retrieval*. Whether the model then answers correctly
   from what it was given is a separate question this harness does not ask.
+- Readability is a classification, not a ranking, so it is reported as a count
+  rather than as a rate: ten questions is far too few to quote a percentage
+  from. It says the boundary is where the set says it should be, not how the
+  system behaves on the languages the set does not contain.

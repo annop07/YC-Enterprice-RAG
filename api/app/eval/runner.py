@@ -13,6 +13,7 @@ artefact of running four different searches.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,16 +181,25 @@ def as_markdown(
     return "\n".join(lines)
 
 
-def validate(questions: list[Question], corpus: dict[str, str]) -> list[str]:
+def validate(questions: list[Question], corpus: Mapping[str, Sequence[str]]) -> list[str]:
     """Catch expectations that no document can satisfy.
 
     A golden set is only as good as its answers, and a typo in one of them
     shows up as a retrieval failure rather than as a broken test.
+
+    A path maps to *every* document indexed under it, not one. Five of the
+    repositories in the development corpus each contribute a `README.md`, and
+    keying by path alone silently checked whichever of them was written last —
+    so an expectation could be validated against a document retrieval would
+    never match it to, and the count printed with the table undercounted the
+    corpus by four documents.
     """
     problems = []
     for q in questions:
-        if q.path not in corpus:
+        texts = corpus.get(q.path)
+        if not texts:
             problems.append(f"{q.question!r}: no document at {q.path!r}")
-        elif q.contains not in corpus[q.path]:
-            problems.append(f"{q.question!r}: {q.contains!r} is not in {q.path}")
+        elif not any(q.contains in text for text in texts):
+            where = q.path if len(texts) == 1 else f"any of the {len(texts)} at {q.path}"
+            problems.append(f"{q.question!r}: {q.contains!r} is not in {where}")
     return problems

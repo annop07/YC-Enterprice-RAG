@@ -35,7 +35,15 @@ async def main() -> int:
     await db.open_pool()
     try:
         rows = await db.fetch_all("SELECT path, text FROM document")
-        corpus = {path: text for path, text in rows}
+
+        # A list per path, not one text: several repositories each contribute a
+        # `README.md`, and a dict keyed by path drops all but the last of them —
+        # under-reporting the corpus and validating expectations against a
+        # document that may not be the one the path was written for.
+        corpus: dict[str, list[str]] = {}
+        for path, text in rows:
+            corpus.setdefault(path, []).append(text)
+
         if not corpus:
             print(
                 "the corpus is empty — run `python -m app.ingest ../docs` first",
@@ -57,7 +65,7 @@ async def main() -> int:
 
     settings = get_settings()
     header = (
-        f"Corpus: {len(corpus)} documents · embeddings {settings.embed_model} · "
+        f"Corpus: {len(rows)} documents · embeddings {settings.embed_model} · "
         f"re-ranker {settings.rerank_model}"
     )
     table = as_markdown(results, len(questions), readability)

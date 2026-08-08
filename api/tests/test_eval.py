@@ -75,7 +75,7 @@ def test_the_markdown_table_reports_every_configuration():
 
 
 def test_validation_catches_an_expectation_no_document_can_satisfy():
-    corpus = {"ingestion.md": "Chunks are 400 tokens with overlap."}
+    corpus = {"ingestion.md": ["Chunks are 400 tokens with overlap."]}
 
     assert validate([QUESTION], corpus) == []
     assert validate(
@@ -83,6 +83,34 @@ def test_validation_catches_an_expectation_no_document_can_satisfy():
     ) == ["'q': no document at 'missing.md'"]
     assert validate([Question("q", "ingestion.md", "not here")], corpus) == [
         "'q': 'not here' is not in ingestion.md"
+    ]
+
+
+def test_validation_reads_every_document_sharing_a_path():
+    """Five repositories in the dev corpus each index a `README.md`.
+
+    Keyed by path alone, four of them were dropped and the expectation was
+    checked against whichever survived — passing or failing on which document
+    was written last rather than on whether the corpus can answer the question.
+    """
+    corpus = {
+        "README.md": [
+            "GymTech is an application for gym owners.",
+            "pgvector adds vector similarity search to Postgres.",
+        ]
+    }
+
+    assert validate([Question("q", "README.md", "vector similarity")], corpus) == []
+    assert validate([Question("q", "README.md", "gym owners")], corpus) == []
+    assert validate([Question("q", "README.md", "absent")], corpus) == [
+        "'q': 'absent' is not in any of the 2 at README.md"
+    ]
+
+
+def test_a_path_indexed_but_empty_is_a_problem_not_a_pass():
+    """`corpus.get` returning `[]` must not read as "nothing to check"."""
+    assert validate([Question("q", "empty.md", "x")], {"empty.md": []}) == [
+        "'q': no document at 'empty.md'"
     ]
 
 
