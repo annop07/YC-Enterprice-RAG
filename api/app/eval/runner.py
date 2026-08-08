@@ -20,6 +20,7 @@ from app.retrieval.search import hybrid_search
 from app.schemas import Source
 
 GOLDEN_PATH = Path(__file__).with_name("golden.json")
+READABILITY_PATH = Path(__file__).with_name("readability.json")
 
 CONFIGS: list[tuple[str, dict]] = [
     ("vector only", {"legs": "vector", "rerank": False}),
@@ -49,9 +50,66 @@ class Score:
     misses: list[str]
 
 
+@dataclass(frozen=True)
+class ReadabilityCase:
+    """A question and whether retrieval is expected to be able to read it.
+
+    Recall says nothing about this axis. Every one of the 30 golden questions is
+    English, so the whole table can read 1.00 while questions in another script
+    return the same arbitrary chunks at 0.99 — which is exactly what it did.
+    """
+
+    question: str
+    unreadable: bool
+    #: Why this case is in the set. Kept in the data because the interesting
+    #: cases are the ones that look like the opposite class: a Thai question
+    #: about something the corpus documents, and an English question about
+    #: something it does not.
+    why: str
+
+
+@dataclass
+class ReadabilityScore:
+    total: int
+    correct: int
+    #: `(question, expected_unreadable)` for each case that came out the other
+    #: way. Listed rather than counted: which side it failed on says whether
+    #: retrieval went blind or went over-cautious, and those are opposite bugs.
+    mismatches: list[tuple[str, bool]]
+
+    @property
+    def accuracy(self) -> float:
+        return self.correct / self.total if self.total else 0.0
+
+
 def load_golden(path: Path = GOLDEN_PATH) -> list[Question]:
     raw = json.loads(path.read_text())
     return [Question(**item) for item in raw]
+
+
+def load_readability(path: Path = READABILITY_PATH) -> list[ReadabilityCase]:
+    raw = json.loads(path.read_text())
+    return [ReadabilityCase(**item) for item in raw]
+
+
+async def score_readability(cases: list[ReadabilityCase], k: int = 5) -> ReadabilityScore:
+    """Whether retrieval classifies each question the way the set says it should.
+
+    Scored through `hybrid_search` rather than `Embedder.reads` directly, so it
+    measures what a caller actually receives — a unit test on the tokenizer
+    passes even if nothing is wired to its answer.
+    """
+    mismatches: list[tuple[str, bool]] = []
+    for case in cases:
+        result = await hybrid_search(case.question, top_k=k)
+        if result.unreadable_query is not case.unreadable:
+            mismatches.append((case.question, case.unreadable))
+
+    return ReadabilityScore(
+        total=len(cases),
+        correct=len(cases) - len(mismatches),
+        mismatches=mismatches,
+    )
 
 
 def first_relevant_rank(question: Question, sources: list[Source]) -> int | None:
@@ -86,7 +144,11 @@ async def run(questions: list[Question], k: int = 5) -> dict[str, Score]:
     return {name: await score_config(questions, k, **config) for name, config in CONFIGS}
 
 
-def as_markdown(results: dict[str, Score], total: int) -> str:
+def as_markdown(
+    results: dict[str, Score],
+    total: int,
+    readability: ReadabilityScore | None = None,
+) -> str:
     lines = [
         f"| Configuration | Recall@1 | Recall@3 | Recall@5 | MRR |",
         f"| --- | --- | --- | --- | --- |",
@@ -98,6 +160,23 @@ def as_markdown(results: dict[str, Score], total: int) -> str:
         )
     lines.append("")
     lines.append(f"{total} questions.")
+
+    if readability is not None:
+        lines.append("")
+        # Reported next to recall rather than in a separate document because the
+        # two answer different halves of the same question, and recall alone
+        # reads as a full account of retrieval when it is not.
+        lines.append(
+            f"Query readability: **{readability.correct}/{readability.total}** "
+            f"classified correctly. A question the embedding model cannot read "
+            f"disables the vector leg and the re-ranker instead of returning "
+            f"their output, so \"could not look\" is never reported as "
+            f"\"looked and found nothing\"."
+        )
+        for question, expected in readability.mismatches:
+            wanted = "unreadable" if expected else "readable"
+            lines.append(f"- not classified as {wanted}: {question!r}")
+
     return "\n".join(lines)
 
 

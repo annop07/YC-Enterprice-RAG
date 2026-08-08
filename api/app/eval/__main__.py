@@ -11,7 +11,14 @@ from pathlib import Path
 
 from app import db
 from app.config import get_settings
-from app.eval.runner import as_markdown, load_golden, run, validate
+from app.eval.runner import (
+    as_markdown,
+    load_golden,
+    load_readability,
+    run,
+    score_readability,
+    validate,
+)
 
 
 async def main() -> int:
@@ -44,6 +51,7 @@ async def main() -> int:
             return 2
 
         results = await run(questions, k=args.k)
+        readability = await score_readability(load_readability(), k=args.k)
     finally:
         await db.close_pool()
 
@@ -52,7 +60,7 @@ async def main() -> int:
         f"Corpus: {len(corpus)} documents · embeddings {settings.embed_model} · "
         f"re-ranker {settings.rerank_model}"
     )
-    table = as_markdown(results, len(questions))
+    table = as_markdown(results, len(questions), readability)
     print(header)
     print()
     print(table)
@@ -68,7 +76,10 @@ async def main() -> int:
         args.out.write_text(f"{header}\n\n{table}\n")
         print(f"\nwrote {args.out}")
 
-    return 0
+    # A misclassified question is a wrong answer wearing a confidence bar, not a
+    # weaker number in a column, so it fails the run the way a golden set that
+    # does not match the corpus does.
+    return 2 if readability.mismatches else 0
 
 
 if __name__ == "__main__":

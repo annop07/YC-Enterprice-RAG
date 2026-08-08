@@ -20,6 +20,7 @@ import pytest_asyncio
 
 from app import db, main
 from app.chat import service, store
+from app.eval.runner import load_readability, score_readability
 from app.ingest.connectors import RawDocument
 from app.ingest.pipeline import ingest
 from app.retrieval import search
@@ -246,3 +247,24 @@ async def test_search_leaves_the_notice_off_a_readable_question():
 
     assert result.notice is None
     assert result.sources
+
+
+# --- the shipped readability set -------------------------------------------
+
+
+async def test_every_shipped_readability_case_is_classified_correctly():
+    """The whole set, through retrieval, in CI.
+
+    `python -m app.eval` reports this number too, but CI runs pytest and not the
+    eval harness — a metric nothing executes is how the original bug survived
+    thirty green golden questions. Failures are reported together rather than at
+    the first one, because which side they fall on is the diagnosis: all-Thai
+    misses mean retrieval went blind again, English misses mean the check turned
+    over-cautious and started refusing questions it can read.
+    """
+    score = await score_readability(load_readability(), k=5)
+
+    assert score.mismatches == [], (
+        f"{score.correct}/{score.total} classified correctly; "
+        f"wrong: {score.mismatches}"
+    )

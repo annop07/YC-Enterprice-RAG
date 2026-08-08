@@ -6,8 +6,21 @@ reported as a retrieval failure.
 """
 from __future__ import annotations
 
-from app.eval.runner import Question, Score, as_markdown, first_relevant_rank, load_golden, validate
+import re
+
+from app.eval.runner import (
+    Question,
+    ReadabilityScore,
+    Score,
+    as_markdown,
+    first_relevant_rank,
+    load_golden,
+    load_readability,
+    validate,
+)
 from app.schemas import Locator, RetrievalTrace, Source
+
+THAI = re.compile(r"[฀-๿]")
 
 
 def source(n: int, path: str, snippet: str) -> Source:
@@ -81,3 +94,72 @@ def test_the_shipped_golden_set_loads_and_is_not_trivially_small():
     assert len({q.path for q in questions}) >= 4, "questions cover several documents"
     for q in questions:
         assert q.contains.strip(), f"{q.question!r} has no expected phrase"
+
+
+# --- readability ----------------------------------------------------------
+
+
+def test_the_readability_set_pins_the_boundary_from_both_sides():
+    """A set of only must-refuse questions passes by refusing everything.
+
+    The failure this file guards against has two directions — going blind and
+    going over-cautious — so both have to be represented or the metric can be
+    satisfied by a regression.
+    """
+    cases = load_readability()
+
+    assert len(cases) >= 8
+    assert len({c.question for c in cases}) == len(cases), "duplicate questions"
+
+    unreadable = [c for c in cases if c.unreadable]
+    readable = [c for c in cases if not c.unreadable]
+    assert len(unreadable) >= 4 and len(readable) >= 4
+
+    for case in cases:
+        assert case.why.strip(), f"{case.question!r} does not say why it is here"
+
+
+def test_the_readable_side_covers_what_used_to_slip_through():
+    """`?` and digits survive an English vocabulary while carrying no meaning.
+
+    A check that counted them as read would classify every Thai question ending
+    in a question mark as readable, which is most of them.
+    """
+    unreadable = {c.question for c in load_readability() if c.unreadable}
+
+    assert any(q.endswith("?") for q in unreadable), "no Thai question with a ?"
+    assert any(re.search(r"\d", q) for q in unreadable), "no Thai question with digits"
+
+
+def test_the_golden_set_alone_cannot_see_this_axis():
+    """Why a second file exists rather than more rows in `golden.json`.
+
+    Every golden question is English, so the recall table can read 1.00 while
+    another script returns arbitrary chunks at 0.99 — which is what happened.
+    `golden.json` measures ranking; this measures whether the question was read.
+    """
+    assert not any(THAI.search(q.question) for q in load_golden())
+    assert any(THAI.search(c.question) for c in load_readability())
+
+
+def test_the_table_reports_readability_and_names_what_failed():
+    scores = {"hybrid": Score(0.8, 0.9, 1.0, 0.85, [])}
+
+    clean = as_markdown(scores, total=30, readability=ReadabilityScore(10, 10, []))
+    assert "**10/10**" in clean
+
+    failed = as_markdown(
+        scores,
+        total=30,
+        readability=ReadabilityScore(10, 9, [("แมวชอบกินอะไร", True)]),
+    )
+    assert "**9/10**" in failed
+    assert "not classified as unreadable: 'แมวชอบกินอะไร'" in failed
+
+
+def test_the_table_without_readability_is_unchanged():
+    """`as_markdown` is called from tests and scripts that do not score it."""
+    table = as_markdown({"hybrid": Score(0.8, 0.9, 1.0, 0.85, [])}, total=30)
+
+    assert "readability" not in table.lower()
+    assert "30 questions." in table

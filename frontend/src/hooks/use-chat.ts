@@ -65,6 +65,7 @@ export function useChat(sessionId: string): UseChat {
                 retrieval: {
                   candidates_considered: ev.data.candidates_considered,
                   retrieval_ms: ev.data.retrieval_ms,
+                  notice: ev.data.notice ?? null,
                 },
               }));
               setStatus("streaming");

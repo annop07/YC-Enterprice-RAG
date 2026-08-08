@@ -60,6 +60,10 @@ export async function POST(request: Request) {
           sources,
           candidates_considered: sources.length > 0 ? 20 : 0,
           retrieval_ms: RETRIEVAL_MS,
+          // The mock speaks the same contract as the API, so the field is
+          // present and null rather than absent — the demo has no embedding
+          // model to be unable to read anything.
+          notice: null,
         });
 
         await sleep(FIRST_TOKEN_MS);

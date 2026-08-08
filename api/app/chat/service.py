@@ -130,8 +130,12 @@ async def _explain_instead_of_answering(
             "candidates_considered": result.candidates_considered,
             "rewritten_query": search_query if search_query != question else None,
             # So a stored turn explains itself later, rather than reading as a
-            # turn where the model inexplicably refused.
+            # turn where the model inexplicably refused. The notice is snapshot
+            # alongside the flag for the same reason the source payload is: a
+            # replayed turn has to render what the live turn rendered, without
+            # the client keeping its own copy of the sentence.
             "unreadable_query": True,
+            "notice": notice_for(result),
         },
     )
 

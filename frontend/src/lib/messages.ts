@@ -52,6 +52,7 @@ export function fromStored(message: StoredMessage): ChatMessage {
                 ? meta.candidates_considered
                 : (message.sources?.length ?? 0),
             retrieval_ms: meta.retrieval_ms,
+            notice: typeof meta.notice === "string" ? meta.notice : null,
           }
         : null,
     meta: hasMeta

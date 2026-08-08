@@ -22,17 +22,26 @@ export function CitationCards({
   activeChunkId,
 }: {
   sources: Source[];
-  retrieval: { candidates_considered: number; retrieval_ms: number } | null;
+  retrieval: {
+    candidates_considered: number;
+    retrieval_ms: number;
+    notice: string | null;
+  } | null;
   onOpen: (source: Source) => void;
   activeChunkId: string | null;
 }) {
-  if (sources.length === 0) return null;
+  const notice = retrieval?.notice ?? null;
+
+  // A notice with no cards is the case worth rendering most: it is the only
+  // thing on screen that distinguishes "could not look" from "looked and found
+  // nothing", and the latter is what an empty section reads as.
+  if (sources.length === 0 && !notice) return null;
 
   return (
     <section className="space-y-2.5">
       <div className="flex items-baseline gap-2">
         <h3 className="font-medium text-foreground text-xs">Sources</h3>
-        {retrieval && (
+        {retrieval && sources.length > 0 && (
           <p className="text-muted-foreground text-xs">
             <span className="font-mono tabular-nums">
               {retrieval.candidates_considered}
@@ -47,16 +56,33 @@ export function CitationCards({
         )}
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2">
-        {sources.map((source) => (
-          <CitationCard
-            active={source.chunk_id === activeChunkId}
-            key={source.chunk_id}
-            onOpen={onOpen}
-            source={source}
-          />
-        ))}
-      </div>
+      {notice && (
+        <p className="rounded-md border border-border border-dashed bg-muted/40 px-3 py-2 text-muted-foreground text-xs">
+          {notice}
+          {sources.length > 0 && (
+            <>
+              {" — "}
+              <span className="font-mono">
+                {sources.length} keyword-only
+              </span>
+              {sources.length === 1 ? " match" : " matches"} below, unranked
+            </>
+          )}
+        </p>
+      )}
+
+      {sources.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {sources.map((source) => (
+            <CitationCard
+              active={source.chunk_id === activeChunkId}
+              key={source.chunk_id}
+              onOpen={onOpen}
+              source={source}
+            />
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -78,6 +78,14 @@ export interface SourcesEvent {
   /** Candidates that survived fusion before the re-ranker trimmed them */
   candidates_considered: number;
   retrieval_ms: number;
+  /**
+   * Why this result set looks the way it does, when that needs saying — today
+   * only "the embedding model could not read the question". Null on a normal
+   * turn. Without it, retrieval that could not read the question and retrieval
+   * that read it and found nothing render identically, and they have opposite
+   * fixes.
+   */
+  notice: string | null;
 }
 
 export interface TokenEvent {
@@ -116,7 +124,11 @@ export interface ChatMessage {
   content: string;
   sources: Source[];
   /** Search-side stats, available before the first token */
-  retrieval: { candidates_considered: number; retrieval_ms: number } | null;
+  retrieval: {
+    candidates_considered: number;
+    retrieval_ms: number;
+    notice: string | null;
+  } | null;
   /** Present once the answer finished streaming */
   meta: DoneEvent | null;
   error: string | null;

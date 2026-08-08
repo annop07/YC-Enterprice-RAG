@@ -1,0 +1,52 @@
+[
+  {
+    "question": "แมวชอบกินอะไร",
+    "unreadable": true,
+    "why": "pure Thai, and about nothing in the corpus — the embedding is the same one every Thai question gets"
+  },
+  {
+    "question": "ใครเป็นคนดูแลระบบนี้",
+    "unreadable": true,
+    "why": "pure Thai, and about something the corpus could plausibly answer, which is the dangerous case"
+  },
+  {
+    "question": "ระบบนี้ทำงานอย่างไร?",
+    "unreadable": true,
+    "why": "the question mark survives the vocabulary and carries none of the question"
+  },
+  {
+    "question": "รองรับเอกสาร 100 ไฟล์ไหม",
+    "unreadable": true,
+    "why": "so does a number: two unrelated Thai questions sharing 100 still embed identically"
+  },
+  {
+    "question": "ค้นหาข้อมูลได้เร็วแค่ไหน",
+    "unreadable": true,
+    "why": "pure Thai about retrieval speed, which the corpus does document in English"
+  },
+  {
+    "question": "เอกสารนี้เขียนว่าอะไร (ตอบสั้นๆ)",
+    "unreadable": true,
+    "why": "punctuation and parentheses are not vocabulary coverage either"
+  },
+  {
+    "question": "ค่า hnsw.ef_search ควรตั้งเท่าไร",
+    "unreadable": false,
+    "why": "one Latin identifier is enough: the keyword leg matches it and the question is answerable"
+  },
+  {
+    "question": "pgvector มีข้อเสียอะไรบ้าง",
+    "unreadable": false,
+    "why": "the common real shape — Thai phrasing around an English product name"
+  },
+  {
+    "question": "how does chunking work?",
+    "unreadable": false,
+    "why": "plain English, the baseline this check must never touch"
+  },
+  {
+    "question": "What is the parental leave policy?",
+    "unreadable": false,
+    "why": "English and unanswerable by this corpus: retrieval read it and found nothing, which is a different report from could not read it, and conflating the two is the bug this file exists for"
+  }
+]
