@@ -15,16 +15,10 @@ from app.chat.prompt import (
     strip_unsupported_citations,
 )
 from app.config import get_settings
-from app.retrieval.search import hybrid_search
+from app.retrieval.search import hybrid_search, notice_for
 from app.schemas import Source
 
 log = logging.getLogger(__name__)
-
-#: One line for the sources card, which has no room for the full explanation.
-UNREADABLE_QUERY_NOTICE = (
-    "โมเดล embedding อ่านคำถามนี้ไม่ออก จึงค้นแบบ semantic ไม่ได้ "
-    "(the embedding model cannot read this question)"
-)
 
 
 def unreadable_query_message(embed_model: str, rerank_model: str) -> str:
@@ -181,7 +175,7 @@ async def stream_chat(
                 "sources": [s.model_dump() for s in sources],
                 "candidates_considered": result.candidates_considered,
                 "retrieval_ms": result.retrieval_ms,
-                "notice": UNREADABLE_QUERY_NOTICE if result.unreadable_query else None,
+                "notice": notice_for(result),
             },
         )
 

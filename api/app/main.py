@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.ingest.github import GitHubConnector, GitHubError
 from app.ingest.pipeline import IngestReport, ingest
 from app.ingest.uploads import document_from_upload
-from app.retrieval.search import hybrid_search
+from app.retrieval.search import hybrid_search, notice_for
 from app.schemas import (
     ChatRequest,
     CorpusStats,
@@ -189,6 +189,7 @@ async def search(request: SearchRequest) -> SourcesEvent:
         sources=result.sources,
         candidates_considered=result.candidates_considered,
         retrieval_ms=result.retrieval_ms,
+        notice=notice_for(result),
     )
 
 

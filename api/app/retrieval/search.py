@@ -179,6 +179,26 @@ class SearchResult:
     unreadable_query: bool = False
 
 
+#: One line for the sources card, which has no room for the full explanation.
+#: It lives beside `unreadable_query` rather than in the chat layer because
+#: every caller that reads the flag owes the user the same sentence, and two
+#: endpoints wording it separately is how they drift apart.
+UNREADABLE_QUERY_NOTICE = (
+    "โมเดล embedding อ่านคำถามนี้ไม่ออก จึงค้นแบบ semantic ไม่ได้ "
+    "(the embedding model cannot read this question)"
+)
+
+
+def notice_for(result: SearchResult) -> str | None:
+    """The `notice` field of a `SourcesEvent` built from `result`.
+
+    `/search` documents itself as returning the same payload the chat stream
+    sends, so it cannot construct that payload a second time by hand — it did,
+    and it left the notice off.
+    """
+    return UNREADABLE_QUERY_NOTICE if result.unreadable_query else None
+
+
 def anchored_url(doc_url: str | None, line_start: int | None, line_end: int | None) -> str | None:
     """Deep-link a citation to the lines it quotes.
 

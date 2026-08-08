@@ -18,12 +18,13 @@ import json
 import pytest
 import pytest_asyncio
 
-from app import db
+from app import db, main
 from app.chat import service, store
 from app.ingest.connectors import RawDocument
 from app.ingest.pipeline import ingest
 from app.retrieval import search
-from app.retrieval.search import hybrid_search
+from app.retrieval.search import UNREADABLE_QUERY_NOTICE, hybrid_search
+from app.schemas import SearchRequest
 from tests.conftest import requires_db
 
 pytestmark = [requires_db, pytest.mark.asyncio]
@@ -216,3 +217,32 @@ async def test_an_english_turn_is_not_diverted(session_id, monkeypatch):
     # stand-in stands in for an LLM this test has no reason to call for real.
     assert calls == ["llm"]
     assert events[-1][0] == "error"
+
+
+# --- the two endpoints agree ----------------------------------------------
+
+
+async def test_search_reports_the_same_notice_as_the_chat_stream(session_id):
+    """`/search` documents itself as returning the chat stream's `sources` payload.
+
+    It assembled that payload a second time by hand and left the notice out, so
+    over REST an unreadable question was indistinguishable from a readable one
+    that matched nothing — including to the evaluation harness, which reaches
+    retrieval only through this endpoint.
+    """
+    over_rest = await main.search(SearchRequest(query=THAI_QUESTION, top_k=5))
+
+    events = parse(
+        [f async for f in service.stream_chat(question=THAI_QUESTION, session_id=session_id)]
+    )
+    over_sse = next(data for name, data in events if name == "sources")
+
+    assert over_rest.notice == over_sse["notice"] == UNREADABLE_QUERY_NOTICE
+
+
+async def test_search_leaves_the_notice_off_a_readable_question():
+    """Otherwise the field means "unreadable" and "nothing to report" at once."""
+    result = await main.search(SearchRequest(query="hnsw.ef_search", top_k=3))
+
+    assert result.notice is None
+    assert result.sources
