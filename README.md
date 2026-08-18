@@ -50,7 +50,7 @@ Recall@5, and that did not survive a larger one.
 | Citation cards showing **why** each chunk was retrieved | [`frontend/src/components/chat/citation-cards.tsx`](frontend/src/components/chat/citation-cards.tsx) |
 | Click-through source viewer — real document, cited lines highlighted | [`frontend/src/components/chat/source-panel.tsx`](frontend/src/components/chat/source-panel.tsx) |
 | Inline `[n]` citations parsed off a half-written stream | [`frontend/src/components/chat/answer-text.tsx`](frontend/src/components/chat/answer-text.tsx) |
-| Session management — list, switch, delete, persist | [`frontend/src/lib/session-store.ts`](frontend/src/lib/session-store.ts) |
+| Session management — list, switch, delete, persist | [`frontend/src/lib/api.ts`](frontend/src/lib/api.ts), [`frontend/src/components/chat/session-sidebar.tsx`](frontend/src/components/chat/session-sidebar.tsx) |
 | API contract the backend has to satisfy | [`frontend/src/lib/types.ts`](frontend/src/lib/types.ts) |
 | Mock backend speaking real SSE at a realistic pace | [`frontend/src/app/api/mock/chat/route.ts`](frontend/src/app/api/mock/chat/route.ts) |
 | Postgres schema — pgvector HNSW + `tsvector` GIN on the same row | [`api/app/schema.sql`](api/app/schema.sql) |
