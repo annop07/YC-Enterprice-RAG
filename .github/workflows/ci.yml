@@ -9,6 +9,12 @@ jobs:
   api:
     runs-on: ubuntu-latest
 
+    env:
+      # fastembed reads this and nothing else — not HF_HOME — and it does not
+      # expand `~`, so the path is absolute. Set for every step in the job so
+      # the run that populates the cache and the run that reads it agree.
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.cache/fastembed
+
     services:
       # The integration tests run against a real Postgres on purpose — the SQL
       # is the interesting part of retrieval, and a mock would test the mock.
@@ -34,9 +40,19 @@ jobs:
       - name: Cache embedding models
         uses: actions/cache@v4
         with:
-          # Without this every run re-downloads the ONNX models from the Hub.
-          path: ~/.cache/huggingface
-          key: fastembed-bge-small-ms-marco-l6
+          # Without this every run re-downloads ~150 MB of ONNX models from the
+          # Hub. It pointed at ~/.cache/huggingface, where fastembed has never
+          # written anything, so the cache was saved empty and restored empty
+          # and every run downloaded them anyway.
+          path: ${{ github.workspace }}/.cache/fastembed
+          # The models are named in the key: changing EMBED_MODEL or
+          # RERANK_MODEL in config.py has to miss this cache rather than
+          # restore the previous model's files under the new name.
+          key: fastembed-${{ runner.os }}-bge-small-en-v1.5-ms-marco-MiniLM-L-6-v2-${{ hashFiles('api/app/config.py') }}
+          # A partial match still saves the download for the models that did
+          # not change, and the job then saves under the exact key above.
+          restore-keys: |
+            fastembed-${{ runner.os }}-
 
       - run: uv sync --frozen
         working-directory: api

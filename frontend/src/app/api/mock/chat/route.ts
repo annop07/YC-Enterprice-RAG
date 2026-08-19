@@ -7,8 +7,10 @@
  * Swap it out by setting NEXT_PUBLIC_API_BASE.
  */
 import { buildSources, pickAnswer } from "@/lib/mock-corpus";
+import { saveTurn, titleFor } from "@/lib/mock-sessions";
 
 const RETRIEVAL_MS = 420;
+const MODEL = "qwen3.7-max";
 const FIRST_TOKEN_MS = 260;
 const TOKEN_MS = 14;
 
@@ -38,6 +40,10 @@ export async function POST(request: Request) {
   const sources = buildSources(answer);
   const started = Date.now();
   const encoder = new TextEncoder();
+  // Resolved before the stream: the id goes out in the `session` frame and is
+  // the key the turn is stored under once the answer finishes.
+  const sessionId =
+    body.session_id ?? `s_${Math.random().toString(36).slice(2, 10)}`;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -47,8 +53,10 @@ export async function POST(request: Request) {
 
       try {
         send("session", {
-          session_id: body.session_id ?? `s_${Math.random().toString(36).slice(2, 10)}`,
-          title: message.length > 56 ? `${message.slice(0, 56)}…` : message,
+          session_id: sessionId,
+          // From the first question of the conversation, not this one — a
+          // follow-up must not rename the session it belongs to.
+          title: titleFor(sessionId, message),
         });
 
         await sleep(RETRIEVAL_MS);
@@ -76,16 +84,44 @@ export async function POST(request: Request) {
         }
 
         const completion = Math.round(answer.answer.length / 3.6);
-        send("done", {
-          message_id: `m_${Math.random().toString(36).slice(2, 10)}`,
-          latency_ms: Date.now() - started,
-          usage: {
-            prompt_tokens: 1180 + sources.length * 210,
-            completion_tokens: completion,
-            total_tokens: 1180 + sources.length * 210 + completion,
+        const prompt = 1180 + sources.length * 210;
+        const usage = {
+          prompt_tokens: prompt,
+          completion_tokens: completion,
+          total_tokens: prompt + completion,
+        };
+        const latency = Date.now() - started;
+
+        // Written before `done` goes out, and only once the answer is whole —
+        // the same point the API commits its transaction. An aborted stream
+        // returns above this line and stores nothing, which is also what the
+        // API does today.
+        //
+        // The keys are the ones `fromStored` reads, so replaying a stored turn
+        // renders exactly what the live one did.
+        const messageId = saveTurn({
+          session_id: sessionId,
+          question: message,
+          answer: answer.answer,
+          sources,
+          meta: {
+            model: MODEL,
+            usage,
+            dropped_citations: 0,
+            latency_ms: latency,
+            retrieval_ms: RETRIEVAL_MS,
+            candidates_considered: sources.length > 0 ? 20 : 0,
           },
+        });
+
+        send("done", {
+          // The id the turn was actually stored under, not a fresh random one:
+          // `done.message_id` is meant to name a row you can fetch back.
+          message_id: messageId,
+          latency_ms: latency,
+          usage,
           dropped_citations: 0,
-          model: "qwen3.7-max",
+          model: MODEL,
         });
       } catch (e) {
         send("error", { detail: e instanceof Error ? e.message : "stream failed" });

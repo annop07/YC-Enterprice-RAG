@@ -3,7 +3,7 @@ import type {
   ChatEvent,
   CorpusStats,
   DocumentSummary,
-  IngestResponse,
+  IngestJob,
   SessionDetail,
   SessionSummary,
   Source,
@@ -33,7 +33,8 @@ export async function getDocuments(): Promise<DocumentSummary[]> {
   return json(await fetch(`${API_BASE}/documents`, { cache: "no-store" }));
 }
 
-export async function ingestFiles(files: File[]): Promise<IngestResponse> {
+/** Starts indexing and returns immediately. Poll it with `getJob`. */
+export async function ingestFiles(files: File[]): Promise<IngestJob> {
   const body = new FormData();
   for (const file of files) body.append("files", file);
   // No Content-Type header on purpose: the browser has to set the multipart
@@ -45,13 +46,20 @@ export async function ingestGitHub(request: {
   repo: string;
   path_prefix?: string;
   ref?: string;
-}): Promise<IngestResponse> {
+}): Promise<IngestJob> {
   return json(
     await fetch(`${API_BASE}/ingest/github`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
     }),
+  );
+}
+
+/** One ingest job, as it stands right now. */
+export async function getJob(id: string): Promise<IngestJob> {
+  return json(
+    await fetch(`${API_BASE}/jobs/${encodeURIComponent(id)}`, { cache: "no-store" }),
   );
 }
 

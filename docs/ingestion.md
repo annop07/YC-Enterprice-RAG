@@ -20,7 +20,12 @@ Drive is one new class rather than a second pipeline.
 - `GitHubConnector` takes a repository's whole layout from one recursive tree
   call — listing directory by directory burns a rate limit of sixty requests an
   hour on nothing — and builds permalinks from the commit SHA rather than the
-  branch, so a link keeps pointing at the text that was indexed.
+  branch, so a link keeps pointing at the text that was indexed. The tree also
+  carries a blob SHA per file, which is a hash of that file's contents, so it is
+  stored on the document and compared on the next sync: a file whose SHA has not
+  moved is never fetched at all. Re-syncing an unchanged sixty-file repository
+  costs one request rather than sixty-one, which is the difference between a
+  scheduled sync being possible unauthenticated and not.
 
 Each document carries a `source_id` that is stable within its source — a path
 relative to the ingest root, not an absolute one. Ingesting the same corpus from
@@ -99,3 +104,42 @@ the cache.
 Changing the embedding model to one with a different width is a re-index, not a
 config edit: the vector column width is fixed when the table is created, and the
 embedder refuses to start if `EMBED_DIM` disagrees with what the model returns.
+
+## Indexing as a job
+
+`POST /ingest/files` and `POST /ingest/github` do not index anything before
+they answer. They write a row in `ingest_job`, start a task, and hand back its
+id with a 202.
+
+That is not an abstraction for its own sake. Indexing is slow in a way a
+request cannot politely absorb — a repository costs one HTTP round trip per
+file, and every chunk is embedded on the CPU — and running it inside the
+request had three consequences and no upside. The caller could only be told
+"working" until it was over, because there was nowhere to put a count. A proxy
+or a browser was free to time the request out, leaving the work running with
+nobody holding its result. And closing the tab killed it half way, with some
+documents indexed and some not, and no record of which.
+
+A job row carries the phase (`reading`, `fetching`, `indexing`), `done` out of
+`total`, and the document currently being worked on. `total` is null while it
+is unknown: a GitHub connector does not know how many documents it has until
+the tree listing comes back, and a progress bar that invents a denominator to
+fill is worse than one that admits it does not have one.
+
+`GET /jobs/{id}` returns the row; once the job finishes it also carries the
+full report, which is exactly the payload these endpoints used to return
+synchronously. `?wait=true` on either endpoint blocks until the job is done and
+returns it complete — that is for scripts, and it is the caller who takes on
+the timeout risk by asking for it.
+
+Two failures that look alike are kept apart. A **job** fails when the work as a
+whole could not run: GitHub was unreachable, the database went away. A
+**document** fails on its own — a PDF whose bytes are not a PDF, a file type
+nothing can read — and the job continues without it, recording one `failed` row
+with the reason on it. That used to be a 415 for the entire request, so a single
+corrupt file in a batch of twelve meant none of them were indexed, which is
+never what was wanted.
+
+A row still marked `running` at startup belongs to a process that is gone: its
+task lived in an event loop that no longer exists. Those are closed out as
+failed on the way up, rather than left reading as work in progress for ever.

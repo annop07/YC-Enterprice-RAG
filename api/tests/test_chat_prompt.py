@@ -88,3 +88,69 @@ def test_stripping_leaves_ordinary_brackets_alone():
 def test_cited_numbers_reads_what_the_answer_claims():
     assert cited_numbers("a [1] b [3] c [1]") == {1, 3}
     assert cited_numbers("no citations here") == set()
+
+
+# --- the conversation the answering model never used to see ---------------
+
+
+def test_the_conversation_reaches_the_model_that_writes_the_answer():
+    """The rewriter had the history; the model answering the question did not.
+
+    So "what about the second one?" arrived at the model as those exact words
+    with five chunks attached and nothing saying what the second one was. The
+    good case was a lucky guess off the context; the normal case was the model
+    asking the user to repeat themselves, over a corpus that had already found
+    the answer.
+    """
+    history = [
+        ("user", "What chunk size does ingestion use?"),
+        ("assistant", "400 tokens, with 80 of overlap [1]."),
+    ]
+    messages = build_messages("why not larger?", [source(1)], history)
+
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1]["content"] == "What chunk size does ingestion use?"
+    assert "why not larger?" in messages[-1]["content"]
+
+
+def test_an_earlier_answer_loses_its_citation_numbers():
+    """`[1]` in the previous turn is not `[1]` in this one.
+
+    Each turn retrieves its own chunks and numbers them from one, so a number
+    carried over from an earlier answer points at a different passage. The
+    citation guard cannot catch that — the number is valid for this turn, so
+    it is kept, and it is wrong.
+    """
+    history = [("assistant", "It uses 400 tokens [1], with 80 of overlap [2].")]
+    carried = build_messages("and the overlap?", [source(1)], history)[1]["content"]
+
+    assert "[1]" not in carried and "[2]" not in carried
+    assert carried == "It uses 400 tokens, with 80 of overlap."
+
+
+def test_a_users_own_words_are_never_rewritten_in_the_history():
+    """Only assistant turns are stripped: `[2]` typed by a user is their text."""
+    history = [("user", "what does [2] mean?")]
+    assert build_messages("q", [source(1)], history)[1]["content"] == "what does [2] mean?"
+
+
+def test_no_history_is_the_same_two_messages_it_always_was():
+    assert len(build_messages("q", [source(1)])) == 2
+
+
+def test_low_confidence_retrieval_says_so_in_the_prompt():
+    """The blocks look identical whether or not anything scored as relevant.
+
+    They are the closest rows in the index either way, so the model has no way
+    to tell from the context alone that it is looking at a near-miss set.
+    """
+    plain = build_messages("q", [source(1)])[-1]["content"]
+    warned = build_messages("q", [source(1)], low_confidence=True)[-1]["content"]
+
+    assert "not scored as clearly relevant" not in plain
+    assert "clearly relevant" in warned
+    assert warned.startswith(plain[:40])
+
+
+def test_nothing_retrieved_says_so_rather_than_sending_an_empty_context():
+    assert "(nothing was retrieved" in build_messages("q", [])[-1]["content"]

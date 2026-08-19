@@ -1,0 +1,22 @@
+# Everything the build does not need, and some things it must not get.
+#
+# Without this file `COPY app ./app` is fine but the build *context* is still
+# the whole directory: the virtualenv, the model cache and .env are all sent to
+# the daemon on every build, which is slow, and .env holds a real API key.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets. `.env.example` at the repository root is the documented template.
+.env
+.env.*
+
+# Tests run in CI, not in the image.
+tests/
+scripts/
+
+.git/
+.gitignore

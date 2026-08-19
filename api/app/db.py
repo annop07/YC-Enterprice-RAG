@@ -14,6 +14,25 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 _pool: AsyncConnectionPool | None = None
 
 
+#: pgvector stores the declared width in `atttypmod` directly — 384 for
+#: `vector(384)` — and -1 for an unconstrained `vector`.
+EMBEDDING_DIM_SQL = """
+SELECT a.atttypmod
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname = 'chunk'
+  AND a.attname = 'embedding'
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+  AND n.nspname = current_schema()
+"""
+
+
+class SchemaMismatch(RuntimeError):
+    """The database was built for a different embedding model."""
+
+
 async def bootstrap() -> None:
     """Create the extension, tables and indexes if they are not there yet.
 
@@ -27,7 +46,27 @@ async def bootstrap() -> None:
     async with await psycopg.AsyncConnection.connect(settings.database_url) as conn:
         async with conn.cursor() as cur:
             await cur.execute(sql)  # type: ignore[arg-type]
+            await cur.execute(EMBEDDING_DIM_SQL)
+            row = await cur.fetchone()
         await conn.commit()
+
+    # `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table, so a
+    # database built for a 384-dimension model stays 384 after EMBED_MODEL is
+    # changed to a 1024-dimension one — and startup succeeds, and `get_embedder`
+    # succeeds because it only checks the model against settings. The failure
+    # then surfaces on the first insert or search, as a pgvector type error that
+    # says nothing about what to do. Say it here instead, once, at startup.
+    if row is not None and row[0] != -1 and row[0] != settings.embed_dim:
+        raise SchemaMismatch(
+            f"EMBED_DIM={settings.embed_dim} but this database's "
+            f"chunk.embedding column is vector({row[0]}). The column width is "
+            f"fixed when the table is created, so switching embedding models is "
+            f"a re-index, not a config change:\n"
+            f"    psql \"$DATABASE_URL\" -c 'DROP TABLE chunk, document CASCADE'\n"
+            f"then start the API again and re-ingest. Answers already in the "
+            f"transcript keep their citations — `message_citation` holds its own "
+            f"snapshot of every source."
+        )
 
 
 async def _configure(conn: psycopg.AsyncConnection) -> None:

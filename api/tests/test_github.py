@@ -187,3 +187,58 @@ def test_an_explicitly_requested_dot_subtree_is_not_filtered_out():
 def test_a_malformed_repo_is_rejected_before_any_request():
     with pytest.raises(ValueError, match="owner/name"):
         GitHubConnector("handbook")
+
+
+# --- B-22: a re-sync should not re-download the whole repository -----------
+
+
+def test_every_document_carries_the_blob_sha_the_next_sync_compares_against():
+    docs = {d.path: d for d in GitHubConnector("acme/handbook", client=build_client()).load()}
+    assert docs["docs/setup.md"].meta["blob_sha"] == blob_sha("docs/setup.md")
+
+
+def test_a_file_whose_blob_sha_is_unchanged_is_never_fetched():
+    """The tree listing already carries a content hash per file, so a sync of
+    an unchanged repository should cost one tree call and nothing else. It used
+    to cost one blob request per file, every time — sixty files is the entire
+    unauthenticated hourly budget spent re-downloading what was already stored.
+    """
+    calls: list[str] = []
+    connector = GitHubConnector(
+        "acme/handbook",
+        client=build_client(calls=calls),
+        known_blob_shas={p: blob_sha(p) for p in FILES},
+    )
+
+    docs = list(connector.load())
+
+    assert docs == [], "nothing changed, so nothing needed loading"
+    assert connector.skipped == ["README.md", "docs/setup.md"]
+    assert [c for c in calls if "/git/blobs/" in c] == []
+
+
+def test_a_file_whose_blob_sha_moved_is_fetched_and_the_rest_are_not():
+    calls: list[str] = []
+    known = {p: blob_sha(p) for p in FILES}
+    known["docs/setup.md"] = "blob-from-an-older-commit"
+
+    connector = GitHubConnector(
+        "acme/handbook", client=build_client(calls=calls), known_blob_shas=known
+    )
+    docs = list(connector.load())
+
+    assert [d.path for d in docs] == ["docs/setup.md"]
+    assert connector.skipped == ["README.md"]
+    assert [c for c in calls if "/git/blobs/" in c] == [
+        f"/repos/acme/handbook/git/blobs/{blob_sha('docs/setup.md')}"
+    ]
+
+
+def test_a_document_that_is_not_indexed_yet_is_never_skipped():
+    """`known_blob_shas` says what the store already has. An empty one — a
+    first sync, or `force` — has to load everything."""
+    connector = GitHubConnector(
+        "acme/handbook", client=build_client(), known_blob_shas={}
+    )
+    assert len(list(connector.load())) == 2
+    assert connector.skipped == []

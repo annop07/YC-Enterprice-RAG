@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     chunk_tokens: int = 400
     chunk_overlap: int = 80
 
+    # --- Uploads ---
+    # Per file, and across one request. `UploadFile.read()` with no argument
+    # pulls the whole file into memory before anything is in a position to
+    # object to its size, so without a ceiling one request decides how much
+    # memory this process uses. Neither number is a judgement about what a
+    # document should weigh — they are the point past which the answer is 413
+    # rather than an out-of-memory kill.
+    max_upload_bytes: int = 20 * 1024 * 1024
+    max_upload_total_bytes: int = 100 * 1024 * 1024
+
     # --- Retrieval ---
     candidates_per_leg: int = 50  # from each of the vector and keyword legs
     fusion_keep: int = 20  # survivors of RRF that go to the re-ranker
@@ -58,6 +68,28 @@ class Settings(BaseSettings):
     # HNSW trades recall for speed through this knob, and its default (40) gives
     # up more than a corpus this size can afford. Applied per connection.
     hnsw_ef_search: int = 100
+    # The cross-encoder's relevance probability, below which retrieval does not
+    # claim to have found anything relevant. It marks the result low-confidence;
+    # it does not delete rows. That distinction is measured, not stylistic:
+    #
+    #   this corpus, 30 golden questions   weakest correct answer  0.00248
+    #   12 questions it answers nothing of strongest wrong answer  0.00011
+    #   "how do I start everything on my laptop?"
+    #     -> "one compose command brings up ..."                   0.0000154
+    #
+    # The third line is the one that matters. It is a correct retrieval — a
+    # paraphrase with no shared vocabulary, which is the case the vector leg
+    # exists for — and the cross-encoder scores it *below* every off-topic
+    # question in the set. ms-marco is bimodal: it recognises lexical overlap
+    # at ~0.99 and reports everything else at ~1e-5, relevant or not. So no
+    # threshold separates "irrelevant" from "relevant but reworded", and a
+    # floor that dropped rows would trade confident wrong answers for silently
+    # missing right ones — the worse of the two, because a dropped chunk
+    # leaves nothing on screen to notice.
+    #
+    # Re-measure after changing RERANK_MODEL. This is a property of that
+    # model's output scale, not a constant.
+    min_rerank_score: float = 0.0005
 
     @property
     def llm_configured(self) -> bool:

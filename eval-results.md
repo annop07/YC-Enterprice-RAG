@@ -4,7 +4,7 @@ Reproduce with:
 
 ```bash
 uv run --directory api python -m app.ingest ../docs
-curl -X POST localhost:8100/ingest/github \
+curl -X POST 'localhost:8100/ingest/github?wait=true' \
      -H 'Content-Type: application/json' -d '{"repo":"pgvector/pgvector"}'
 uv run --directory api python -m app.eval --misses
 ```
@@ -45,6 +45,31 @@ re-ranker `Xenova/ms-marco-MiniLM-L-6-v2`
 
 Query readability: **10/10** classified correctly.
 
+### What the keyword leg cost to change
+
+These figures survived two changes to the keyword leg, which is the point of
+quoting them again rather than replacing them. Combining marks are now part of a
+term — Thai and decomposed Vietnamese words used to come apart at every vowel
+sign — and the leg now also searches an English-stemmed copy of each chunk, so
+"chunk" reaches a passage that says "chunks". Both were measured against this
+same corpus, and the table above is unchanged in every cell.
+
+Two other ways of recovering word forms were measured and rejected:
+
+| keyword leg | Recall@1 | Recall@3 | Recall@5 | MRR |
+| --- | --- | --- | --- | --- |
+| before any of this | 0.50 | 0.77 | 0.87 | 0.640 |
+| terms queried as prefixes, `'chunk':*` (≥4 chars) | 0.40 | 0.73 | 0.83 | 0.579 |
+| the same at ≥5 / ≥6 / ≥7 chars | 0.43 / 0.40 / 0.43 | — | — | 0.602 / 0.577 / 0.597 |
+| stemmed column scored as an equal | 0.47 | 0.73 | 0.83 | 0.605 |
+| stemmed column, exact matches ranked first | 0.50 | 0.77 | 0.87 | 0.640 |
+
+`ts_rank_cd` has no inverse document frequency, so anything that widens a query
+widens it at full volume: the five extra words a prefix matches score exactly as
+loudly as the term that was typed. Only the last row — where a stemmed match can
+fill the tail of the candidate list but never displace an exact one — recovers
+word forms without paying for them somewhere else.
+
 Recall says nothing about whether the question was read in the first place. Every
 one of the 30 questions above is English, so the whole table can sit at 0.97
 while a question in another script returns the same arbitrary chunks for any
@@ -78,6 +103,22 @@ variation remain and are not fixable by a sort key — an exact cosine tie at th
 vector leg's candidate limit can still change which rows are fetched, and HNSW is
 approximate over a graph that depends on insertion order, so a re-index can in
 principle shift the candidate set before any ordering applies.
+
+### The distractors move on their own
+
+The distractor repositories are pinned by name, not by commit, so re-syncing one
+picks up whatever its default branch says today. Observed here: a later sync of
+`pgvector/pgvector` rewrote its README and CHANGELOG and took the corpus from 147
+chunks to 148. The two fused rows did not move at all — `hybrid (RRF)` 0.806 and
+`hybrid + rerank` 0.878 reproduced to the digit — while the single legs each
+shifted by one question, `vector only` Recall@3 from 0.77 to 0.73 and
+`keyword only` from 0.77 to 0.80.
+
+That is the granularity this set has, stated as arithmetic further down: one
+question is 0.033. It is also the same result the corpus change further up
+produced in miniature — the individual legs are what a moving haystack disturbs,
+and fusion is what absorbs it. Reproducing the exact table means pinning the
+distractors to the commits they were measured at, which this harness does not do.
 
 ### The earlier corpus, for comparison
 

@@ -54,11 +54,24 @@ CREATE TABLE IF NOT EXISTS chunk (
     -- English stemmer mangles everything that is not English. Thai needs
     -- word segmentation before this column is useful at all.
     tsv          TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
+    -- And 'english' as well as, never instead of. `simple` does not stem, so
+    -- "chunk" does not match "chunks" and "deploy" does not match "deployment"
+    -- — measured: the tsvector for "The chunks are 400 tokens" does not match
+    -- the query 'chunk'. Searching both columns and taking the better score
+    -- recovers English word forms without the stemmer being allowed anywhere
+    -- near the faithful copy the other languages depend on.
+    tsv_en       TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
     UNIQUE (document_id, ordinal)
 );
 
+-- For databases created before `tsv_en` existed. A generated column is filled
+-- in for every existing row by the ALTER itself, so this is not a re-index.
+ALTER TABLE chunk ADD COLUMN IF NOT EXISTS tsv_en TSVECTOR
+    GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+
 CREATE INDEX IF NOT EXISTS chunk_document_idx ON chunk (document_id);
 CREATE INDEX IF NOT EXISTS chunk_tsv_idx ON chunk USING gin (tsv);
+CREATE INDEX IF NOT EXISTS chunk_tsv_en_idx ON chunk USING gin (tsv_en);
 -- Cosine, to match the normalised embeddings fastembed returns.
 CREATE INDEX IF NOT EXISTS chunk_embedding_idx
     ON chunk USING hnsw (embedding vector_cosine_ops);
@@ -106,3 +119,42 @@ CREATE TABLE IF NOT EXISTS message_citation (
     source     JSONB NOT NULL,
     PRIMARY KEY (message_id, n)
 );
+
+-- --------------------------------------------------------------------------
+-- Ingestion jobs
+-- --------------------------------------------------------------------------
+
+-- Indexing is slow — a repository is one HTTP round trip per file, and every
+-- chunk is embedded on the CPU — and it used to run inside the request that
+-- asked for it. That request had no way to say how far it had got, so the UI
+-- showed one spinner for the whole thing; a proxy or a browser could time it
+-- out and leave the work half done with nobody holding the result; and closing
+-- the tab killed it. The work is now a row here, and the request that starts
+-- it only has to hand back an id.
+CREATE TABLE IF NOT EXISTS ingest_job (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL CHECK (source IN ('files', 'github')),
+    -- What is being indexed, for a list that has to be readable: "4 files" or
+    -- "pgvector/pgvector".
+    label       TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed')),
+    -- The phase a running job is in. A GitHub job spends most of its time
+    -- fetching, before there is anything to count.
+    phase       TEXT,
+    -- Null while unknown: a connector discovers its documents as it goes.
+    total       INT,
+    done        INT NOT NULL DEFAULT 0,
+    -- The document being worked on right now.
+    current     TEXT,
+    -- The finished IngestResponse, so a completed job renders the same report
+    -- the synchronous endpoint used to return.
+    report      JSONB,
+    -- Set only when the job as a whole failed. A single document that could
+    -- not be read is not this: it is one "failed" row inside `report`, and the
+    -- other documents in the same job still get indexed.
+    error       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ingest_job_created_idx ON ingest_job (created_at DESC);

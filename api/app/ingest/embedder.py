@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
 import unicodedata
-from functools import lru_cache
 from typing import Sequence
 
 from fastembed import TextEmbedding
@@ -151,9 +151,11 @@ class Embedder:
         return next(iter(self._model.query_embed(prepared))).tolist()
 
 
-@lru_cache(maxsize=1)
-def get_embedder() -> Embedder:
-    """Loading the ONNX model takes seconds; do it once per process."""
+_instance: Embedder | None = None
+_lock = threading.Lock()
+
+
+def _build() -> Embedder:
     settings = get_settings()
     embedder = Embedder(settings.embed_model)
 
@@ -165,3 +167,21 @@ def get_embedder() -> Embedder:
             f"creation, so this is a re-index, not a config change."
         )
     return embedder
+
+
+def get_embedder() -> Embedder:
+    """Loading the ONNX model takes seconds; do it once per process.
+
+    Locked rather than `lru_cache`d. `lru_cache` looks up its cache before the
+    body runs, so two threads that arrive together both miss and both load —
+    the startup warm-up racing the first request, or two questions asked at
+    once. That is two ONNX sessions, two dimension probes and twice the memory
+    for one model. Double-checked here so the second caller waits for the first
+    one's instance instead of building its own.
+    """
+    global _instance
+    if _instance is None:
+        with _lock:
+            if _instance is None:
+                _instance = _build()
+    return _instance
