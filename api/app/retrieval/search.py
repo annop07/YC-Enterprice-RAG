@@ -53,6 +53,23 @@ from app.schemas import Locator, RetrievalTrace, Source
 #: cannot order by `ts_rank_cd` at all, so that sort is already happening and
 #: the extra keys are free; it tiebreaks in both places, which also pins which
 #: rows survive its LIMIT.
+#:
+#: The keyword leg reads two columns, and `exact_hit` is what keeps that from
+#: costing anything. `tsv` is the faithful `simple` index and `tsv_en` the
+#: English-stemmed one, so a question about "the chunk size" reaches a chunk
+#: that only ever says "chunks" — which `simple` alone cannot do, and which is
+#: half of what people actually type. Ranking them as equals is what fails:
+#: `ts_rank_cd` has no IDF, so a stemmed match scores as loudly as an exact one
+#: and displaces it. Measured on the golden set, ranking them together cost
+#: keyword-only Recall@1 0.50 -> 0.47 and MRR 0.640 -> 0.605. Sorting by
+#: `exact_hit` first makes the stemmed column strictly additive: it can fill
+#: the tail of the candidate list, never the head, and the golden set then
+#: reproduces every cell of the previous table exactly.
+#:
+#: The `OR` costs nothing structural — checked with EXPLAIN, it plans as a
+#: `BitmapOr` over the two GIN indexes. At this corpus size the planner reads
+#: the whole table instead, as it did with one column and will for any table
+#: this small.
 HYBRID_SQL = """
 WITH vec AS (
     SELECT id, ROW_NUMBER() OVER (ORDER BY distance, document_id, ordinal) AS rank
@@ -64,12 +81,19 @@ WITH vec AS (
     ) ranked
 ),
 kw AS (
-    SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC, document_id, ordinal) AS rank
+    SELECT id, ROW_NUMBER() OVER (ORDER BY exact_hit DESC, score DESC, document_id, ordinal) AS rank
     FROM (
-        SELECT c.id, c.document_id, c.ordinal, ts_rank_cd(c.tsv, q) AS score
-        FROM chunk c, to_tsquery('simple', %(keywords)s) AS q
-        WHERE c.tsv @@ q
-        ORDER BY score DESC, c.document_id, c.ordinal
+        SELECT c.id, c.document_id, c.ordinal,
+               (c.tsv @@ q.exact) AS exact_hit,
+               CASE WHEN c.tsv @@ q.exact
+                    THEN ts_rank_cd(c.tsv, q.exact)
+                    ELSE ts_rank_cd(c.tsv_en, q.stemmed)
+               END AS score
+        FROM chunk c,
+             (SELECT to_tsquery('simple', %(keywords)s) AS exact,
+                     to_tsquery('english', %(keywords)s) AS stemmed) q
+        WHERE c.tsv @@ q.exact OR c.tsv_en @@ q.stemmed
+        ORDER BY exact_hit DESC, score DESC, c.document_id, c.ordinal
         LIMIT %(keyword_limit)s
     ) ranked
 ),
@@ -110,11 +134,66 @@ STOPWORDS = frozenset(
     """.split()
 )
 
-#: Words, identifiers and dotted names. Non-ASCII runs are kept whole, which is
-#: enough for the vector leg to carry Thai but not enough for the keyword leg —
-#: Thai is unsegmented, so a sentence becomes one useless token. That needs a
-#: real segmenter before this leg is worth anything on Thai text.
-TERM = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*|[^\W\d_]{2,}", re.UNICODE)
+#: Combining marks — Unicode category M. Python's `re` has no `\p{M}` and
+#: deriving the property at import time means walking the whole code space, so
+#: the ranges that reach a corpus like this one are listed instead.
+#:
+#: They have to be in `TERM` because a mark is not a letter: `str.isalnum()` is
+#: False for every Thai vowel sign and tone mark, so `[^\W\d_]` rejects them and
+#: a word came apart at each one — "ตั้งค่าไว้เท่าไร" tokenised to
+#: `['งค', 'าไว', 'เท', 'าไร']`, none of which is a word. Postgres's `simple`
+#: parser meanwhile keeps the whole run as one lexeme, so those fragments could
+#: not match the index no matter what was indexed. Decomposed Vietnamese,
+#: Devanagari and pointed Arabic and Hebrew break the same way.
+MARKS = (
+    "̀-ͯ"  # Latin/Greek/Cyrillic diacritics; decomposed Vietnamese
+    "҃-҉"  # Cyrillic
+    "֑-ׇֽֿׁׂׅׄ"  # Hebrew points
+    "ؐ-ًؚ-ٰٟۖ-ۜ"  # Arabic
+    "ऀ-ःऺ-ॏ॑-ॗॢॣ"  # Devanagari
+    "ัิ-ฺ็-๎"  # Thai vowels above/below, tone marks
+    "ັິ-ຼ່-ໍ"  # Lao
+    "ါ-ှ"  # Myanmar
+    "឴-៓"  # Khmer
+    "᪰-᫿᷀-᷿⃐-⃰︠-︯"  # extended marks
+)
+
+#: Words, identifiers and dotted names, in one alternative rather than two.
+#: Two alternatives split a word at the first non-ASCII letter, because the
+#: regex engine takes the first branch that matches and not the longest one:
+#: "Tiếng" came out as `['ti', 'ếng']` and "café" as `['caf']` — the accented
+#: tail dropped for being a single character. One class of "letter, mark, digit
+#: or joiner" keeps every run whole, which is what the `simple` parser indexes.
+#:
+#: Whole is as far as this goes for unsegmented scripts: a Thai sentence is
+#: still one token and matches only a chunk containing that same run. Findable,
+#: not searchable — a segmenter on both sides is what would make this leg worth
+#: anything on Thai prose.
+_LETTER = "(?:[^\\W\\d_]|[" + MARKS + "])"
+TERM = re.compile(
+    rf"(?:{_LETTER}|[0-9_])(?:{_LETTER}|[0-9_.\-])*",
+    re.UNICODE,
+)
+
+def _lexeme(term: str) -> str:
+    """One quoted tsquery lexeme.
+
+    Quoting means a term containing punctuation cannot be read as tsquery
+    syntax; the apostrophe is dropped rather than escaped because it cannot
+    survive as a term character anyway.
+
+    Deliberately *not* prefix-matched. Appending `:*` is the obvious answer to
+    an unstemmed index — "chunk" would then find "chunks" — and it was measured
+    on the golden set at four, five, six and seven characters minimum. Every
+    one of them made retrieval worse: at four, keyword-only MRR fell from 0.640
+    to 0.579 and hybrid RRF from 0.806 to 0.786, and no threshold recovered the
+    baseline. The reason is the one this module's header already gives for
+    needing a tiebreak: `ts_rank_cd` has no IDF, so a prefix that matches five
+    extra words scores as loudly as the exact term did, and the ranking blurs.
+    The word-form problem is solved in the SQL instead, by `tsv_en` — see
+    `HYBRID_SQL`, where a stemmed match can only ever rank *below* an exact one.
+    """
+    return "'" + term.replace("'", "") + "'"
 
 
 def keyword_tsquery(query: str) -> str:
@@ -132,6 +211,9 @@ def keyword_tsquery(query: str) -> str:
     **Stopwords removed.** `ts_rank_cd` has no IDF, so with stopwords left in,
     "the" and "do" score exactly as loudly as "compose" and the ranking becomes
     noise — measured, again: the correct chunk fell out of the top five.
+
+    The same string is given to both text-search configurations in
+    `HYBRID_SQL`: `simple` reads it literally, `english` stems each lexeme.
     """
     terms: list[str] = []
     seen: set[str] = set()
@@ -143,9 +225,9 @@ def keyword_tsquery(query: str) -> str:
         seen.add(term)
         terms.append(term)
 
-    # Quoting each lexeme means a term containing punctuation cannot be read as
-    # tsquery syntax. An empty string is a valid, matches-nothing tsquery.
-    return " | ".join("'" + t.replace("'", "") + "'" for t in terms)
+    # An empty string is a valid tsquery that matches nothing — which is the
+    # right answer for a question made entirely of function words.
+    return " | ".join(_lexeme(t) for t in terms)
 
 
 @dataclass
@@ -177,6 +259,27 @@ class SearchResult:
     #: than hidden: the caller has to be able to tell "we found nothing" apart
     #: from "we could not look".
     unreadable_query: bool = False
+    #: The best relevance probability the cross-encoder gave anything, or None
+    #: when it did not run (an un-reranked configuration, or an unreadable
+    #: question). This is the number that says whether retrieval found an
+    #: answer or merely found its twenty nearest rows — fusion returns its
+    #: best twenty however bad they are, and rank has no opinion about that.
+    top_rerank_score: float | None = None
+
+    @property
+    def low_confidence(self) -> bool:
+        """Nothing retrieved was scored as clearly relevant.
+
+        Reported, not acted on: see `MIN_RERANK_SCORE` for the measurement
+        that says this signal is not sharp enough to drop rows with. It is
+        sharp enough to stop the result being *presented* as an answer.
+        """
+        from app.config import get_settings  # local: avoids an import cycle
+
+        return (
+            self.top_rerank_score is not None
+            and self.top_rerank_score < get_settings().min_rerank_score
+        )
 
 
 #: One line for the sources card, which has no room for the full explanation.
@@ -189,6 +292,17 @@ UNREADABLE_QUERY_NOTICE = (
 )
 
 
+#: Said in the sources card when nothing retrieved scored as clearly relevant.
+#: These chunks are the closest twenty rows in the index, which is not the same
+#: claim as "these answer the question" — and five cards with a zeroed
+#: relevance bar make the stronger claim unless something says otherwise.
+LOW_CONFIDENCE_NOTICE = (
+    "ไม่มีเอกสารชิ้นไหนถูกจัดว่าเกี่ยวข้องชัดเจน — ผลด้านล่างคือชิ้นที่ใกล้เคียงที่สุด "
+    "เท่านั้น โปรดตรวจสอบก่อนเชื่อ "
+    "(nothing scored as clearly relevant; these are only the closest matches)"
+)
+
+
 def notice_for(result: SearchResult) -> str | None:
     """The `notice` field of a `SourcesEvent` built from `result`.
 
@@ -196,7 +310,11 @@ def notice_for(result: SearchResult) -> str | None:
     sends, so it cannot construct that payload a second time by hand — it did,
     and it left the notice off.
     """
-    return UNREADABLE_QUERY_NOTICE if result.unreadable_query else None
+    if result.unreadable_query:
+        return UNREADABLE_QUERY_NOTICE
+    if result.low_confidence:
+        return LOW_CONFIDENCE_NOTICE
+    return None
 
 
 def anchored_url(doc_url: str | None, line_start: int | None, line_end: int | None) -> str | None:
@@ -298,7 +416,11 @@ async def hybrid_search(
     rerank: bool = True,
 ) -> SearchResult:
     """`legs` is "hybrid", "vector" or "keyword" — the evaluation harness uses
-    the narrower ones to measure what each contributes."""
+    the narrower ones to measure what each contributes.
+
+    Nothing is ever dropped for scoring badly — `SearchResult.low_confidence`
+    reports it instead, and `MIN_RERANK_SCORE` carries the measurement that
+    says why dropping would cost more than it buys."""
     settings = get_settings()
     top_k = top_k or settings.top_k
     started = time.perf_counter()
@@ -335,6 +457,7 @@ async def hybrid_search(
     )
     considered = len(candidates)
 
+    top_score: float | None = None
     if candidates and rerank and readable:
         reranker = get_reranker()
         scores = await asyncio.to_thread(
@@ -347,10 +470,16 @@ async def hybrid_search(
         # chain: without it this sort would quietly inherit the heap's order.
         candidates.sort(key=lambda c: c.rerank_score or 0.0, reverse=True)
 
+        # Kept, not cut. See `MIN_RERANK_SCORE`: the score is a reliable
+        # "yes" and an unreliable "no", so it is carried out as a confidence
+        # signal for the answer layer and the citation card to act on.
+        top_score = candidates[0].rerank_score
+
     elapsed = int((time.perf_counter() - started) * 1000)
     return SearchResult(
         sources=[to_source(c, i + 1) for i, c in enumerate(candidates[:top_k])],
         candidates_considered=considered,
         retrieval_ms=elapsed,
         unreadable_query=not readable,
+        top_rerank_score=top_score,
     )

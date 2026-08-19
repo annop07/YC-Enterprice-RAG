@@ -213,7 +213,12 @@ async def test_an_english_turn_is_not_diverted(session_id, monkeypatch):
     )
 
     sources = next(data for name, data in events if name == "sources")
-    assert sources["notice"] is None
+    # Not the unreadable notice. It may carry the low-confidence one: this
+    # three-document corpus answers the question only by paraphrase, and the
+    # cross-encoder scores a paraphrase it cannot recognise the same way it
+    # scores noise (see MIN_RERANK_SCORE). That is a caveat printed over a
+    # result set, which is a different thing from declining to look.
+    assert sources["notice"] != search.UNREADABLE_QUERY_NOTICE
     # It reached the generation path and failed there, which is the proof; the
     # stand-in stands in for an LLM this test has no reason to call for real.
     assert calls == ["llm"]

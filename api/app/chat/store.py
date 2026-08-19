@@ -10,7 +10,11 @@ from app.schemas import Source
 
 #: Enough context for the rewriter to resolve "that" or "the second one",
 #: without dragging a long conversation into every request.
-HISTORY_TURNS = 6
+#:
+#: Messages, not turns: `LIMIT` counts rows, and a turn is two rows. Six here is
+#: the last three exchanges. The name used to say "turns", which read as twice
+#: the history the rewriter actually got.
+HISTORY_MESSAGES = 6
 
 
 def new_id(prefix: str) -> str:
@@ -22,7 +26,9 @@ def derive_title(first_message: str) -> str:
     return f"{line[:56]}…" if len(line) > 56 else (line or "New chat")
 
 
-async def recent_turns(session_id: str, limit: int = HISTORY_TURNS) -> list[tuple[str, str]]:
+async def recent_turns(
+    session_id: str, limit: int = HISTORY_MESSAGES
+) -> list[tuple[str, str]]:
     rows = await db.fetch_all(
         """
         SELECT role, content FROM chat_message
@@ -33,18 +39,21 @@ async def recent_turns(session_id: str, limit: int = HISTORY_TURNS) -> list[tupl
     return [(r[0], r[1]) for r in reversed(rows)]
 
 
-async def save_turn(
-    *,
-    session_id: str,
-    title: str,
-    question: str,
-    answer: str,
-    sources: list[Source],
-    meta: dict,
-) -> str:
-    """Persist one question/answer pair and its citations. Returns message id."""
+async def start_turn(*, session_id: str, title: str, question: str) -> str:
+    """Open a turn: create or touch the session, write the question.
+
+    Written before retrieval rather than after generation, which is where the
+    whole turn used to be written. Everything between those two points can
+    fail — the LLM can error, the reader can press Stop, a laptop lid can
+    close — and until this existed, all of it ended the same way: nothing was
+    saved. The question the user typed was gone on reload, and if it was the
+    first of a conversation the session itself never appeared in the sidebar,
+    so there was no thread to go back to and no evidence the turn had ever
+    happened.
+
+    Returns the user message id.
+    """
     user_id = new_id("m")
-    assistant_id = new_id("m")
 
     async with db.pool().connection() as conn:
         async with conn.transaction():
@@ -55,15 +64,50 @@ async def save_turn(
                 """,
                 (session_id, title),
             )
-            await conn.cursor().executemany(
+            await conn.execute(
                 """
                 INSERT INTO chat_message (id, session_id, role, content, meta)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, 'user', %s, %s)
                 """,
-                [
-                    (user_id, session_id, "user", question, Json({})),
-                    (assistant_id, session_id, "assistant", answer, Json(meta)),
-                ],
+                (user_id, session_id, question, Json({})),
+            )
+
+    return user_id
+
+
+async def finish_turn(
+    *,
+    session_id: str,
+    answer: str,
+    sources: list[Source],
+    meta: dict,
+) -> str:
+    """Close a turn: write the answer and the citations it stands on.
+
+    Separate transaction from `start_turn`, which is what lets a turn be
+    persisted in the state it actually reached — including a half-written
+    answer that was interrupted. Ordering does not depend on the split:
+    `chat_message.seq` is assigned at insert time and the question is always
+    inserted first.
+
+    Returns the assistant message id.
+    """
+    assistant_id = new_id("m")
+
+    async with db.pool().connection() as conn:
+        async with conn.transaction():
+            # The answer lands after the question, sometimes much later, and
+            # the sidebar orders by this.
+            await conn.execute(
+                "UPDATE chat_session SET updated_at = now() WHERE id = %s",
+                (session_id,),
+            )
+            await conn.execute(
+                """
+                INSERT INTO chat_message (id, session_id, role, content, meta)
+                VALUES (%s, %s, 'assistant', %s, %s)
+                """,
+                (assistant_id, session_id, answer, Json(meta)),
             )
             if sources:
                 await conn.cursor().executemany(
@@ -92,6 +136,30 @@ async def save_turn(
                 )
 
     return assistant_id
+
+
+async def save_turn(
+    *,
+    session_id: str,
+    title: str,
+    question: str,
+    answer: str,
+    sources: list[Source],
+    meta: dict,
+) -> str:
+    """One finished question/answer pair, written in one call.
+
+    The streaming endpoint does not use this — it opens the turn before it
+    retrieves and closes it when the answer is whole, which is the point of
+    the split above. This is for callers that already have both halves, and
+    for the tests that exercise the read path.
+
+    Returns the assistant message id.
+    """
+    await start_turn(session_id=session_id, title=title, question=question)
+    return await finish_turn(
+        session_id=session_id, answer=answer, sources=sources, meta=meta
+    )
 
 
 async def list_sessions() -> list[tuple[str, str, str]]:

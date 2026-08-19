@@ -62,7 +62,7 @@ Recall@5, and that did not survive a larger one.
 | Idempotent ingest — content hash, delete-and-insert in one transaction | [`api/app/ingest/pipeline.py`](api/app/ingest/pipeline.py) |
 | PDF extraction with page locators and a scanned-document warning | [`api/app/ingest/pdf.py`](api/app/ingest/pdf.py) |
 | GitHub via one recursive tree call, permalinks pinned to the commit | [`api/app/ingest/github.py`](api/app/ingest/github.py) |
-| Upload and repository ingest endpoints | [`api/app/main.py`](api/app/main.py), `POST /ingest/files` · `POST /ingest/github` |
+| Upload and repository ingest as background jobs, with per-file progress | [`api/app/ingest/jobs.py`](api/app/ingest/jobs.py), `POST /ingest/files` · `POST /ingest/github` · `GET /jobs/{id}` |
 | Corpus panel — drop a file in, point at a repo, see and remove what is indexed | [`frontend/src/components/corpus/corpus-panel.tsx`](frontend/src/components/corpus/corpus-panel.tsx) |
 | Hybrid search — both legs and RRF fusion in one SQL statement | [`api/app/retrieval/search.py`](api/app/retrieval/search.py), `POST /search` |
 | Cross-encoder re-ranking, logits squashed to a relevance probability | [`api/app/retrieval/reranker.py`](api/app/retrieval/reranker.py) |
@@ -104,8 +104,11 @@ uv run --directory api uvicorn app.main:app --port 8100 --reload
 npm run dev --prefix frontend -- --port 3100
 ```
 
-`GET /health` reports the database, the pgvector version and the corpus counts.
-The schema is applied on startup — no migration step to remember.
+`GET /health` reports the database, the pgvector version, the corpus counts and
+`models_ready` — the embedding and re-ranking models load in the background at
+startup, so the first question does not pay for them. The schema is applied on
+startup too, and startup fails loudly if the database was built for an embedding
+model of a different width rather than letting the first search discover it.
 
 **Index some documents:**
 
@@ -139,14 +142,39 @@ already in the index. Removing a document there leaves the answers that cited it
 intact — `message_citation` keeps a snapshot of the source, so old citations
 still render after the text behind them is gone.
 
-The same thing over HTTP:
+The same thing over HTTP. Both endpoints answer with a **job** rather than a
+report — a repository is one round trip per file before any of it is embedded,
+which is longer than a browser or a proxy will hold a request open:
 
 ```bash
 curl -X POST localhost:8100/ingest/files -F "files=@notes.md" -F "files=@handbook.pdf"
-curl -X POST localhost:8100/ingest/github \
-     -H 'Content-Type: application/json' \
-     -d '{"repo":"pgvector/pgvector","path_prefix":"docs"}'
 ```
+
+```
+{"id":"job_d5408ba43153","status":"running","label":"2 files","phase":"reading","total":2,…}
+```
+
+```bash
+curl localhost:8100/jobs/job_d5408ba43153     # phase, done/total, current file
+```
+
+```
+{"status":"done","done":2,"total":2,"report":{"written":2,"unchanged":0,"failed":0,…}}
+```
+
+`?wait=true` blocks until the job finishes and returns it complete, which is
+what a script usually wants:
+
+```bash
+curl -X POST 'localhost:8100/ingest/github?wait=true' \
+     -H 'Content-Type: application/json' \
+     -d '{"repo":"pgvector/pgvector","path_prefix":"doc"}'
+```
+
+**One unreadable file no longer takes the batch with it.** A PDF whose bytes are
+not a PDF used to fail the whole request with a 415 and index none of the others;
+it is now one `failed` row in the report, with the reason on it, beside the
+documents that indexed fine.
 
 Set `GITHUB_TOKEN` for private repositories, and for the rate limit: GitHub
 allows 60 requests an hour unauthenticated, which one medium repository spends.

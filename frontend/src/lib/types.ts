@@ -176,19 +176,57 @@ export interface DocumentSummary {
 
 export interface IngestResult {
   path: string;
-  /** "created" | "updated" | "unchanged" */
+  /** "created" | "updated" | "unchanged" | "failed" */
   status: string;
   chunks: number;
+  /**
+   * Why this one document could not be indexed. The rest of the batch is
+   * unaffected — a corrupt PDF among twelve files used to fail the whole
+   * request and index none of them.
+   */
+  error: string | null;
 }
 
 export interface IngestResponse {
   documents: number;
   written: number;
   unchanged: number;
+  failed: number;
   chunks: number;
   /** Tokens per chunk the pipeline actually used, after clamping to the model */
   chunk_budget: number;
   results: IngestResult[];
+}
+
+/**
+ * A unit of indexing work that outlives the request that started it.
+ *
+ * `POST /ingest/*` answers with one of these instead of blocking: a
+ * repository is one round trip per file before anything is embedded, which is
+ * longer than a browser or a proxy will hold a request open. Poll it until
+ * `status` leaves "running".
+ */
+export interface IngestJob {
+  id: string;
+  /** "files" | "github" */
+  source: string;
+  /** What is being indexed: "4 files", "pgvector/pgvector" */
+  label: string;
+  /** "running" | "done" | "failed" */
+  status: string;
+  /** Which stage a running job is in — reading, fetching, indexing */
+  phase: string | null;
+  /** Null while unknown: a connector discovers its documents as it goes */
+  total: number | null;
+  done: number;
+  /** The document being worked on right now */
+  current: string | null;
+  /** Present once the job finishes */
+  report: IngestResponse | null;
+  /** Set only when the job as a whole failed, never for a single document */
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface CorpusStats {

@@ -16,6 +16,7 @@ import {
   IS_DEMO,
   deleteDocument,
   getDocuments,
+  getJob,
   ingestFiles,
   ingestGitHub,
 } from "@/lib/api";
@@ -23,7 +24,13 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { DocumentSummary, IngestResponse, SourceType } from "@/lib/types";
+import type {
+  DocumentSummary,
+  IngestJob,
+  IngestResponse,
+  IngestResult,
+  SourceType,
+} from "@/lib/types";
 
 const ICONS: Record<SourceType, typeof IconMarkdown> = {
   markdown: IconMarkdown,
@@ -32,6 +39,10 @@ const ICONS: Record<SourceType, typeof IconMarkdown> = {
 };
 
 const ACCEPT = ".md,.mdx,.markdown,.pdf";
+
+//: Often enough to look live, rarely enough that a long ingest is not a
+//: request per file. The job row is cheap to read; the work is not.
+const POLL_MS = 600;
 
 /**
  * What is in the index, and how to put more in it.
@@ -53,7 +64,7 @@ export function CorpusPanel({
   const [repo, setRepo] = useState("");
   const [prefix, setPrefix] = useState("");
   const [busy, setBusy] = useState<"files" | "github" | null>(null);
-  const [report, setReport] = useState<IngestResponse | null>(null);
+  const [job, setJob] = useState<IngestJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -79,12 +90,33 @@ export function CorpusPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  async function run(kind: "files" | "github", work: () => Promise<IngestResponse>) {
+  /**
+   * Start a job and follow it to the end.
+   *
+   * The endpoint answers before the work is done, so the panel polls rather
+   * than waits. That is the whole reason indexing became a job: a repository
+   * takes longer to read than a browser will hold a request open, and one
+   * spinner for the entire batch could not say which file it was on.
+   */
+  async function run(kind: "files" | "github", start: () => Promise<IngestJob>) {
     setBusy(kind);
     setError(null);
-    setReport(null);
+    setJob(null);
     try {
-      setReport(await work());
+      let current = await start();
+      setJob(current);
+
+      while (current.status === "running") {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        current = await getJob(current.id);
+        setJob(current);
+        // The corpus counts move while it runs, not only at the end.
+        onIngested();
+      }
+
+      if (current.status === "failed") {
+        setError(current.error ?? "the job failed");
+      }
       refresh();
       onIngested();
     } catch (e) {
@@ -187,7 +219,8 @@ export function CorpusPanel({
             </p>
           )}
 
-          {report && <Report report={report} />}
+          {job && job.status === "running" && <Progress job={job} />}
+          {job?.report && <Report report={job.report} />}
 
           <section className="space-y-2">
             <h3 className="font-medium text-foreground text-xs">Indexed</h3>
@@ -380,30 +413,117 @@ function GitHubForm({
   );
 }
 
-function Report({ report }: { report: IngestResponse }) {
-  const MARK: Record<string, string> = {
-    created: "+",
-    updated: "~",
-    unchanged: "=",
-  };
+//: What each stage is called on screen. A job spends most of its life in one
+//: of three, and "working" for all of them is what this replaced.
+const PHASES: Record<string, string> = {
+  reading: "Reading the files",
+  fetching: "Fetching from GitHub",
+  indexing: "Chunking and embedding",
+};
 
+function Progress({ job }: { job: IngestJob }) {
+  // Null while the total is unknown — a GitHub job does not know how many
+  // documents it has until the tree listing comes back, and a bar that
+  // invents a denominator to fill is worse than one that admits it.
+  const percent =
+    job.total && job.total > 0
+      ? Math.min(100, Math.round((job.done / job.total) * 100))
+      : null;
+
+  return (
+    <section className="space-y-2">
+      <h3 className="font-medium text-foreground text-xs">{job.label}</h3>
+      <div className="space-y-2 rounded-xl p-3 ring-1 ring-foreground/10">
+        <div className="flex items-center gap-2 text-xs">
+          <IconLoader2
+            className="shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+            size={13}
+          />
+          <span className="text-muted-foreground">
+            {PHASES[job.phase ?? ""] ?? "Working"}
+          </span>
+          <span className="ml-auto shrink-0 font-mono text-muted-foreground text-[11px] tabular-nums">
+            {job.total !== null ? `${job.done} / ${job.total}` : job.done || ""}
+          </span>
+        </div>
+
+        <div
+          aria-label="Indexing progress"
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={percent ?? undefined}
+          className="h-1 overflow-hidden rounded-full bg-muted"
+          role="progressbar"
+        >
+          <span
+            className={cn(
+              "block h-full rounded-full bg-foreground/40",
+              percent === null
+                ? "w-full animate-pulse motion-reduce:animate-none"
+                : "transition-[width] duration-300",
+            )}
+            style={percent === null ? undefined : { width: `${percent}%` }}
+          />
+        </div>
+
+        {job.current && (
+          <p className="truncate font-mono text-[11px] text-muted-foreground">
+            {job.current}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const MARK: Record<string, string> = {
+  created: "+",
+  updated: "~",
+  unchanged: "=",
+  failed: "!",
+};
+
+function ResultRow({ result, index }: { result: IngestResult; index: number }) {
+  const failed = result.status === "failed";
+  return (
+    <div className={cn("flex flex-col gap-0.5", index > 0 && "pt-0.5")}>
+      <div className="flex gap-2">
+        <span className={cn("w-3 shrink-0", failed ? "text-destructive" : "text-muted-foreground")}>
+          {MARK[result.status] ?? "?"}
+        </span>
+        <span className={cn("min-w-0 flex-1 truncate", failed ? "text-destructive" : "text-foreground")}>
+          {result.path}
+        </span>
+        <span className="shrink-0 text-muted-foreground tabular-nums">
+          {failed ? "failed" : result.chunks ? `${result.chunks} chunks` : "no change"}
+        </span>
+      </div>
+      {/* The reason, on the row it belongs to. One unreadable file no longer
+          takes the batch down, so it has to say why it is the one that went. */}
+      {failed && result.error && (
+        <p className="pl-5 text-[10px] text-destructive/80 leading-4">{result.error}</p>
+      )}
+    </div>
+  );
+}
+
+function Report({ report }: { report: IngestResponse }) {
   return (
     <section className="space-y-2">
       <h3 className="font-medium text-foreground text-xs">Result</h3>
       <div className="space-y-1 rounded-xl p-3 font-mono text-[11px] ring-1 ring-foreground/10">
-        {report.results.map((r) => (
-          <div className="flex gap-2" key={r.path}>
-            <span className="w-3 shrink-0 text-muted-foreground">
-              {MARK[r.status] ?? "?"}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-foreground">{r.path}</span>
-            <span className="shrink-0 text-muted-foreground tabular-nums">
-              {r.chunks ? `${r.chunks} chunks` : "no change"}
-            </span>
-          </div>
+        {/* Keyed by position, not by path: several files in one report can
+            share a name — a repository with a README per package, say — and a
+            duplicate key drops all but one row from the screen. */}
+        {report.results.map((r, i) => (
+          <ResultRow index={i} key={`${i}-${r.path}`} result={r} />
         ))}
         <p className="border-border border-t pt-2 text-muted-foreground">
-          {report.written} written, {report.unchanged} unchanged ·{" "}
+          {report.written} written, {report.unchanged} unchanged
+          {report.failed > 0 && (
+            <span className="text-destructive">, {report.failed} failed</span>
+          )}
+          {" · "}
           <span className="tabular-nums">{report.chunks}</span> chunks · budget{" "}
           <span className="tabular-nums">{report.chunk_budget}</span> tokens
         </p>

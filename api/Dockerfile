@@ -14,7 +14,13 @@ COPY app ./app
 # fastembed downloads its ONNX models on first use. Baking them in keeps the
 # first request from taking thirty seconds and the container from needing the
 # network at run time.
-ENV HF_HOME=/app/.cache/huggingface
+#
+# FASTEMBED_CACHE_PATH, not HF_HOME: fastembed does not read HF_HOME at all. It
+# calls `define_cache_dir()`, which reads this variable and otherwise falls back
+# to $TMPDIR/fastembed_cache — so with HF_HOME set the models were being baked
+# into /tmp, which happened to survive into the image and would stop surviving
+# the moment /tmp became a tmpfs or the build was cleaned between layers.
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed
 RUN uv run python -c "\
 from fastembed import TextEmbedding; \
 from fastembed.rerank.cross_encoder import TextCrossEncoder; \

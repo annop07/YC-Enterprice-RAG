@@ -21,18 +21,37 @@ import {
 } from "@/lib/api";
 import { fromStored, newSessionId } from "@/lib/messages";
 import { cn } from "@/lib/utils";
-import type { CorpusStats, SessionSummary, Source } from "@/lib/types";
+import type {
+  CorpusStats,
+  SessionEvent,
+  SessionSummary,
+  Source,
+} from "@/lib/types";
 
 export function ChatShell() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
-  // Generated on the client and sent with the first turn; the server keys the
-  // conversation by it. It never reaches the DOM as text — only as the "which
-  // row is highlighted" comparison, and the list is empty during SSR — so a
-  // server/client mismatch has nothing to render.
+  // Proposed by the client and sent with the first turn; the server keys the
+  // conversation by it and confirms it back in the `session` frame. It never
+  // reaches the DOM as text — only as the "which row is highlighted"
+  // comparison, and the list is empty during SSR — so a server/client
+  // mismatch has nothing to render.
   const [sessionId, setSessionId] = useState(newSessionId);
 
-  const { messages, status, send, stop, load } = useChat(sessionId);
+  // Whatever the server called this conversation. Null until it says, and
+  // reset whenever the shell switches conversations.
+  const [serverTitle, setServerTitle] = useState<string | null>(null);
+
+  const onSession = useCallback((event: SessionEvent) => {
+    // Adopting the id matters even though the server echoes the proposed one
+    // today: the moment it starts issuing its own — which is what it has to
+    // do once sessions belong to an account — every turn after the first
+    // would otherwise open a new conversation.
+    setSessionId(event.session_id);
+    setServerTitle(event.title);
+  }, []);
+
+  const { messages, status, send, stop, load } = useChat(sessionId, { onSession });
   const [draft, setDraft] = useState("");
   const [openSource, setOpenSource] = useState<Source | null>(null);
   const [stats, setStats] = useState<CorpusStats | null>(null);
@@ -82,6 +101,7 @@ export function ChatShell() {
 
   const startNew = useCallback(() => {
     setSessionId(newSessionId());
+    setServerTitle(null);
     load([]);
     setDraft("");
     setOpenSource(null);
@@ -94,6 +114,7 @@ export function ChatShell() {
       getSession(id)
         .then((session) => {
           setSessionId(id);
+          setServerTitle(session.title);
           load(session.messages.map(fromStored));
           setOpenSource(null);
         })
@@ -125,8 +146,11 @@ export function ChatShell() {
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // The server's title once it has sent one, so the header and the sidebar row
+  // are the same string rather than two derivations of it that agree until the
+  // question is long enough to be truncated.
   const activeTitle =
-    messages.find((m) => m.role === "user")?.content ?? "New chat";
+    serverTitle ?? messages.find((m) => m.role === "user")?.content ?? "New chat";
 
   return (
     <div className="flex h-full">

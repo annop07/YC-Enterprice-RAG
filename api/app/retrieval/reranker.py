@@ -8,7 +8,7 @@ only the survivors of fusion are worth spending it on.
 from __future__ import annotations
 
 import math
-from functools import lru_cache
+import threading
 from typing import Sequence
 
 from fastembed.rerank.cross_encoder import TextCrossEncoder
@@ -43,6 +43,16 @@ class Reranker:
         return [relevance_probability(s) for s in self._model.rerank(query, list(documents))]
 
 
-@lru_cache(maxsize=1)
+_instance: Reranker | None = None
+_lock = threading.Lock()
+
+
 def get_reranker() -> Reranker:
-    return Reranker(get_settings().rerank_model)
+    """One cross-encoder per process. Double-checked for the same reason
+    `get_embedder` is: `lru_cache` lets two threads load the model twice."""
+    global _instance
+    if _instance is None:
+        with _lock:
+            if _instance is None:
+                _instance = Reranker(get_settings().rerank_model)
+    return _instance

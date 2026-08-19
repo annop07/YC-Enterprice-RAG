@@ -35,6 +35,43 @@ chunk fell out of the top five entirely. With them removed it ranks first.
 Every term is quoted before it reaches `to_tsquery`, so punctuation in a query
 is data rather than operators.
 
+## Two text-search configurations, not one
+
+`simple` does not stem. That is the price of using it — and the reason it is
+used, since the English stemmer mangles every other language — but the price is
+real: `to_tsvector('simple', 'The chunks are 400 tokens')` does not match a
+query for `chunk`, and "deploy" does not find "deployment". Half of what people
+type is the wrong form of a word that is in the corpus.
+
+So the chunk table carries a second generated column, `tsv_en`, built with the
+`english` configuration, and the keyword leg searches both: the same query
+string is parsed twice, once per configuration, and a chunk qualifies if either
+matches. **A stemmed match can never outrank an exact one** — the leg orders by
+`exact_hit` before it orders by score — which is the whole design, and it was
+arrived at by measurement:
+
+| keyword leg | Recall@1 | Recall@3 | Recall@5 | MRR |
+| --- | --- | --- | --- | --- |
+| `simple` only (before) | 0.50 | 0.77 | 0.87 | 0.640 |
+| terms as prefixes, `'chunk':*` | 0.40 | 0.73 | 0.83 | 0.579 |
+| `simple` + `english` scored as equals | 0.47 | 0.73 | 0.83 | 0.605 |
+| `simple` + `english`, exact first | 0.50 | 0.77 | 0.87 | 0.640 |
+
+Prefix matching is the obvious fix and it is the wrong one: it was measured at a
+minimum term length of four, five, six and seven characters and every variant
+came out below the baseline. Scoring the two columns as equals loses less and
+still loses. Both fail for the reason this document already gives for removing
+stopwords — `ts_rank_cd` has no inverse document frequency, so the extra words
+an expanded query matches score exactly as loudly as the exact term did, and the
+ranking blurs. Sorting exact hits first makes the second column strictly
+additive: it fills the tail of the candidate list and never the head, the golden
+set reproduces every cell of the previous table, and "chunk" now reaches a
+passage that only ever says "chunks".
+
+Ranking that is aware of term rarity is a different piece of work — real BM25,
+either through an extension or by carrying IDF in a table of its own — and it is
+what would let an expanded query pay for itself.
+
 ## What Thai does to each leg
 
 Thai defeats both legs, and it defeats them for two unrelated reasons that need
@@ -46,6 +83,16 @@ covering the whole phrase. Postgres will match that token against a query token
 spelled exactly the same way and against nothing else — no prefix of it, no word
 inside it. Measured over six Thai questions, not one of the twenty chunks that
 came back had a keyword rank at all.
+
+The query side used to be worse still, and for a different reason: the term
+regex read a Thai vowel sign or tone mark as *not part of a word*, because
+`str.isalnum()` is False for a combining mark. "ตั้งค่าไว้เท่าไร" came out as
+`['งค', 'าไว', 'เท', 'าไร']` — four fragments, none of them a word, none of them
+the single lexeme Postgres had indexed. The query could not have matched even a
+document containing exactly that phrase. Marks are part of a word now, so the
+query at least carries what the index holds. That is one of the two fixes, and
+it is the smaller one: matching whole phrases is still not searching, and a
+segmenter on both sides is what this leg needs.
 
 The vector leg fails earlier and more completely. `BAAI/bge-small-en-v1.5` is an
 English model and there is no Thai in its WordPiece vocabulary, so each unbroken

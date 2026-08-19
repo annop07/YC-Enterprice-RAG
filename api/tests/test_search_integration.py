@@ -12,7 +12,7 @@ import pytest_asyncio
 from app import db
 from app.ingest.connectors import RawDocument
 from app.ingest.pipeline import ingest
-from app.retrieval.search import hybrid_search
+from app.retrieval.search import hybrid_search, keyword_tsquery
 from tests.conftest import requires_db
 
 pytestmark = [requires_db, pytest.mark.asyncio]
@@ -132,3 +132,81 @@ async def test_an_empty_query_short_circuits():
     result = await hybrid_search("   ", top_k=5)
     assert result.sources == []
     assert result.candidates_considered == 0
+
+
+# --- B-08: the index is not stemmed, so the query is a prefix --------------
+
+
+async def test_a_word_form_the_document_does_not_use_still_reaches_it():
+    """The corpus says "brings up"; someone asking about it types "bring".
+
+    `simple` was chosen over `english` because the stemmer mangles every
+    language that is not English, and the cost of that choice is that no word
+    form matches any other. The stemmed `tsv_en` column pays it back without
+    the stemmer touching the faithful copy.
+    """
+    indexed = "One compose command brings up the database"
+
+    exact = await db.fetch_one(
+        "SELECT to_tsvector('simple', %s) @@ to_tsquery('simple', %s)",
+        (indexed, keyword_tsquery("bring")),
+    )
+    stemmed = await db.fetch_one(
+        "SELECT to_tsvector('english', %s) @@ to_tsquery('english', %s)",
+        (indexed, keyword_tsquery("bring")),
+    )
+
+    assert exact[0] is False, "the bug: 'bring' does not match 'brings'"
+    assert stemmed[0] is True, "which the stemmed column is there to fix"
+
+    result = await hybrid_search("which command brings the stack up?", top_k=3)
+    running = next((s for s in result.sources if s.path == "test/running.md"), None)
+    assert running is not None, "the document with the answer is not in the results"
+
+
+async def test_a_stemmed_match_never_outranks_an_exact_one():
+    """Which is what makes the second column free.
+
+    `ts_rank_cd` has no IDF, so scoring the two columns as equals let a stemmed
+    match displace an exact one — measured on the golden set as Recall@1 0.50
+    -> 0.47. Ordering by `exact_hit` first means the stemmed column can only
+    ever fill the tail of the candidate list.
+    """
+    # "handover" appears verbatim in the rotation document, so it is an exact
+    # hit. "bring" appears nowhere: the running document says "brings", which
+    # only the stemmed column can reach.
+    result = await hybrid_search("handover bring", top_k=3)
+
+    ranked = {s.path: s.retrieval.keyword_rank for s in result.sources}
+    assert ranked.get("test/rotation.md") == 1, f"exact match lost rank 1: {ranked}"
+    assert ranked.get("test/running.md") == 2, f"stemmed match not behind it: {ranked}"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "how do I run the whole stack locally?",
+        "set hnsw.ef_search to 100",
+        "the X-Accel-Buffering header",
+        "BAAI/bge-small-en-v1.5 dimensions",
+        "ตั้งค่า chunk ไว้เท่าไร",
+        "Tiếng Việt tổ hợp",
+        "café",
+        "'; DROP TABLE chunk; --",
+        "drop & everything | now ! ( ) <-> :* ''",
+        "what is it about?",
+    ],
+)
+async def test_every_query_this_builds_is_a_tsquery_postgres_accepts(question: str):
+    """`to_tsquery` raises on malformed input, and this string is built by hand
+    from arbitrary user text — a term rule that emits one stray operator turns
+    every search into a 500. Both configurations parse the same string now, so
+    both are checked.
+    """
+    row = await db.fetch_one(
+        """
+        SELECT to_tsquery('simple', %(q)s)::text, to_tsquery('english', %(q)s)::text
+        """,
+        {"q": keyword_tsquery(question)},
+    )
+    assert row is not None

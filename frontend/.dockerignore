@@ -1,0 +1,15 @@
+# `COPY . .` in the build stage copies over the node_modules the deps stage
+# installed for Linux — with whatever the host happened to have, which on a
+# macOS or Windows checkout is a different platform's binaries for the same
+# paths. The image then fails at run time in a way that points nowhere near
+# the cause. .next is stale build output and .env.local is the developer's.
+node_modules/
+.next/
+out/
+
+.env
+.env.*
+
+.git/
+.gitignore
+npm-debug.log*

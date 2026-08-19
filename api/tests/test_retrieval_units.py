@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import math
+import unicodedata
+
+import pytest
 
 from app.retrieval.reranker import relevance_probability
 from app.retrieval.search import (
@@ -68,12 +71,72 @@ def test_keyword_query_cannot_inject_tsquery_syntax():
     # An apostrophe is not a term character, so it cannot close the quoting
     # around a term — it splits it, and the leftover "s" is too short to keep.
     assert keyword_tsquery("nick's") == "'nick'"
+    # `:*` in the input is not an instruction either — it is punctuation, and
+    # punctuation is not a term character.
+    assert keyword_tsquery("a:*b | drop:*") == "'drop'"
 
 
 def test_a_query_of_only_function_words_yields_an_empty_tsquery():
     """Which Postgres accepts and matches nothing — the vector leg carries it."""
     assert keyword_tsquery("what is it about?") == ""
     assert keyword_tsquery("   ") == ""
+
+
+# --- B-08: an unstemmed index, and what did *not* fix it ------------------
+
+
+def test_terms_are_not_prefix_matched():
+    """The obvious fix for an unstemmed index is `'chunk':*`, and it was tried.
+
+    Measured on the 30-question golden set at a minimum length of four, five,
+    six and seven characters, every variant made retrieval worse than leaving
+    it alone — keyword-only MRR 0.640 -> 0.579 at four, and no threshold got
+    back to the baseline. `ts_rank_cd` has no IDF, so the extra words a prefix
+    matches score as loudly as the exact term and blur the ranking. Word forms
+    are recovered in the SQL instead, by the stemmed `tsv_en` column, which
+    cannot outrank an exact match.
+    """
+    assert keyword_tsquery("chunk") == "'chunk'"
+    assert keyword_tsquery("deployment") == "'deployment'"
+    assert ":*" not in keyword_tsquery("configuration settings documented")
+
+
+# --- B-04: marks are part of the word --------------------------------------
+
+
+def test_thai_words_survive_their_vowel_signs_and_tone_marks():
+    """`[^\\W\\d_]` rejects category-Mn characters, which cut every Thai word
+    into the fragments between its marks — `['งค', 'าไว', 'เท', 'าไร']` — while
+    Postgres keeps the run whole, so nothing could ever match."""
+    assert keyword_tsquery("ตั้งค่าไว้เท่าไร") == "'ตั้งค่าไว้เท่าไร'"
+    assert keyword_tsquery("chunk size ของ ingestion") == (
+        "'chunk' | 'size' | 'ของ' | 'ingestion'"
+    )
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Tiếng Việt", "'tiếng' | 'việt'"),
+        # Two alternatives split a word at the first non-ASCII letter and the
+        # one-character tail was then dropped for being too short: "café" used
+        # to leave only "caf".
+        ("café", "'café'"),
+        ("दस्तावेज़", "'दस्तावेज़'"),
+    ],
+)
+def test_a_word_is_never_split_at_its_first_non_ascii_letter(text: str, expected: str):
+    assert keyword_tsquery(text) == expected
+
+
+def test_a_decomposed_word_is_one_term_and_not_one_per_accent():
+    """The same text in NFD is a letter followed by two combining marks per
+    vowel. The lexeme stays in the form it arrived in — normalising is the
+    index's business, not this function's — but it stays *whole*, which is the
+    property that was broken.
+    """
+    terms = keyword_tsquery(unicodedata.normalize("NFD", "Tiếng Việt")).split(" | ")
+    assert [unicodedata.normalize("NFC", t) for t in terms] == ["'tiếng'", "'việt'"]
 
 
 def test_relevance_probability_is_a_sigmoid_and_survives_extreme_logits():

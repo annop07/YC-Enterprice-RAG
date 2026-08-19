@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { streamChat } from "@/lib/api";
 import { emptyAssistantMessage, userMessage } from "@/lib/messages";
-import type { ChatMessage } from "@/lib/types";
+import type { ChatMessage, SessionEvent } from "@/lib/types";
 
 /**
  * `retrieving` is a distinct state from `streaming` on purpose: the gap
@@ -20,13 +20,33 @@ export interface UseChat {
   load: (messages: ChatMessage[]) => void;
 }
 
+export interface UseChatOptions {
+  /**
+   * The `session` frame, which lands before retrieval even starts.
+   *
+   * It carries the two things the server, not the client, is the authority
+   * on: the id the turn was actually filed under — the client proposes one,
+   * the server is free to hand back another — and the session title, which is
+   * derived from the *first* question of the conversation and is what the
+   * sidebar row shows. Whoever owns the session id gets told; nobody has to
+   * derive either value a second way and hope the two agree.
+   */
+  onSession?: (event: SessionEvent) => void;
+}
+
 let counter = 0;
 const nextId = () => `m_${Date.now().toString(36)}_${counter++}`;
 
-export function useChat(sessionId: string): UseChat {
+export function useChat(sessionId: string, options: UseChatOptions = {}): UseChat {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const abortRef = useRef<AbortController | null>(null);
+  // Read through a ref so the caller can pass an inline closure without
+  // handing `send` a new identity on every render.
+  const onSessionRef = useRef(options.onSession);
+  useEffect(() => {
+    onSessionRef.current = options.onSession;
+  }, [options.onSession]);
   // `status` updates asynchronously, so a fast double-submit can slip past a
   // check on it and open two streams. A ref flips synchronously.
   const inFlight = useRef(false);
@@ -58,6 +78,15 @@ export function useChat(sessionId: string): UseChat {
           controller.signal,
         )) {
           switch (ev.event) {
+            case "session":
+              // Only while this turn is still the one on screen. `session` is
+              // the first frame and the callback moves the shell, so a user
+              // who starts a chat and immediately opens another one can be
+              // dragged back into the first by a frame that was already in
+              // flight. Every other frame here patches a message by id and is
+              // a harmless no-op once that message is gone; this one is not.
+              if (!controller.signal.aborted) onSessionRef.current?.(ev.data);
+              break;
             case "sources":
               patch(assistantId, (m) => ({
                 ...m,
@@ -83,7 +112,10 @@ export function useChat(sessionId: string): UseChat {
               patch(assistantId, (m) => ({ ...m, error: ev.data.detail }));
               break;
             default:
-              break; // `session` is handled by the shell that owns the id
+              // An event this build does not know about is ignored rather
+              // than treated as a failure, so the contract can grow a frame
+              // without every older client breaking on it.
+              break;
           }
         }
       } catch (e) {
